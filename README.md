@@ -40,3 +40,68 @@ AXTree: 52% accuracy
 ## License
 
 MIT — format is open.
+
+# SiFR Format Specification
+
+Version: 0.1
+
+## Overview
+
+SiFR (Structured Interface Representation) describes interactive elements on a web page in a format optimized for LLM processing.
+
+## Element Structure
+
+Each element contains:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| id | yes | Unique identifier (e.g., btn015) |
+| type | yes | Element type |
+| text | no | Visible text content |
+| position | no | [x, y, width, height] |
+| state | no | enabled, disabled, hidden |
+| parent | no | Parent element id |
+| nearby | no | Related element ids |
+
+## Element Types
+
+- `button`
+- `link`
+- `input`
+- `select`
+- `checkbox`
+- `radio`
+- `text`
+- `image`
+- `container`
+
+## Detail Levels
+
+### Minimal
+```yaml
+btn015: button "Add to Cart"
+```
+
+### Standard
+```yaml
+btn015:
+  type: button
+  text: "Add to Cart"
+  position: [500, 300, 120, 40]
+  state: enabled
+```
+
+### Full
+```yaml
+btn015:
+  type: button
+  text: "Add to Cart"
+  position: [500, 300, 120, 40]
+  state: enabled
+  parent: product-card-007
+  nearby: [price-label, qty-selector]
+```
+
+## File Extension
+
+`.sifr`
