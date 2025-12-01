@@ -1,0 +1,11 @@
+input001:
+  type: input
+  text: ""
+  placeholder: "Search"
+  position: [200, 40, 400, 36]
+
+btn002:
+  type: button
+  text: "Search"
+  position: [610, 40, 80, 36]
+  state: enabled
