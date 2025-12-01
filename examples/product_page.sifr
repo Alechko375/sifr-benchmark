@@ -1,0 +1,24 @@
+img001:
+  type: image
+  position: [50, 100, 400, 400]
+
+txt002:
+  type: text
+  text: "Product Title"
+  position: [500, 100, 300, 24]
+
+txt003:
+  type: text
+  text: "$99.00"
+  position: [500, 140, 80, 20]
+
+btn004:
+  type: button
+  text: "Add to Cart"
+  position: [500, 200, 120, 40]
+  state: enabled
+
+select005:
+  type: select
+  text: "Quantity: 1"
+  position: [500, 260, 100, 32]
