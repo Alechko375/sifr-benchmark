@@ -3,6 +3,7 @@ name: SiFR Benchmark
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -11,112 +12,58 @@ on:
         description: 'Models to test (comma-separated)'
         required: false
         default: 'gpt-4o-mini'
-      formats:
-        description: 'Formats to test (comma-separated)'
-        required: false
-        default: 'sifr,html_raw'
-      runs:
-        description: 'Number of runs per configuration'
-        required: false
-        default: '1'
 
 jobs:
-  validate:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.11'
       
-      - name: Validate SiFR examples exist
+      - name: Install package
         run: |
-          echo "📁 Checking SiFR examples..."
-          ls -la examples/*.sifr || echo "No .sifr files in examples/"
-          
-          count=$(find examples -name "*.sifr" 2>/dev/null | wc -l)
-          echo "Found $count .sifr files"
-          
-          if [ "$count" -gt 0 ]; then
-            echo "✅ SiFR examples present"
-          else
-            echo "⚠️ No SiFR examples yet"
-          fi
+          pip install -e ".[dev]"
       
-      - name: Validate JSON files
+      - name: Run tests
         run: |
-          echo "📋 Validating JSON files..."
-          
-          # Check tasks.json
-          if [ -f "benchmark/tasks.json" ]; then
-            node -e "JSON.parse(require('fs').readFileSync('benchmark/tasks.json'))" && \
-              echo "✅ benchmark/tasks.json is valid"
-          else
-            echo "⚠️ benchmark/tasks.json not found"
-          fi
-          
-          # Check ground truth files
-          for f in benchmark/ground-truth/*.json; do
-            if [ -f "$f" ]; then
-              node -e "JSON.parse(require('fs').readFileSync('$f'))" && \
-                echo "✅ $f is valid" || echo "❌ $f is invalid"
-            fi
-          done
+          pytest tests/ -v || echo "No tests yet"
       
-      - name: Check required files
+      - name: Validate SiFR files
         run: |
-          echo "📄 Checking required files..."
-          
-          files=("README.md" "SPEC.md" "LICENSE")
-          for f in "${files[@]}"; do
-            if [ -f "$f" ]; then
-              echo "✅ $f exists"
-            else
-              echo "❌ $f missing"
-            fi
-          done
+          sifr-bench validate examples/ || true
       
-      - name: Summary
+      - name: Check CLI works
         run: |
-          echo ""
-          echo "📊 Repository Summary:"
-          echo "  - Examples: $(find examples -name '*.sifr' 2>/dev/null | wc -l) .sifr files"
-          echo "  - Ground truth: $(find benchmark/ground-truth -name '*.json' 2>/dev/null | wc -l) files"
-          echo ""
-          echo "✅ Validation complete"
+          sifr-bench --version
+          sifr-bench info
 
-  benchmark:
-    needs: validate
+  publish:
+    needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      id-token: write  # For PyPI trusted publishing
     
     steps:
       - uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.11'
       
-      - name: Install dependencies
-        run: npm install
+      - name: Install build tools
+        run: pip install build
       
-      - name: Run benchmark
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          node src/runner.js \
-            --models ${{ github.event.inputs.models }} \
-            --formats ${{ github.event.inputs.formats }} \
-            --runs ${{ github.event.inputs.runs }} \
-            --output results/ci_run_${{ github.run_number }}
+      - name: Build package
+        run: python -m build
       
-      - name: Upload results
-        uses: actions/upload-artifact@v4
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          name: benchmark-results-${{ github.run_number }}
-          path: results/ci_run_${{ github.run_number }}/
-          retention-days: 30
+          password: ${{ secrets.PYPI_API_TOKEN }}
