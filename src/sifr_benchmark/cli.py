@@ -225,6 +225,36 @@ to describe web UI for LLMs. 70% fewer tokens, 2x accuracy.
 """
     console.print(info_text)
 
-
+@main.command()
+@click.argument("url")
+@click.option("--name", "-n", default=None, help="Base name for output files")
+@click.option("--output", "-o", default="datasets/formats", help="Output directory")
+def capture(url, name, output):
+    """Capture a page in all formats (SiFR, HTML, Screenshot, AXTree)."""
+    from .capture import capture_page, check_playwright
+    
+    if not check_playwright():
+        console.print("[red]Playwright not installed![/red]")
+        console.print("Run: pip install playwright && playwright install chromium")
+        return
+    
+    if not name:
+        from urllib.parse import urlparse
+        name = urlparse(url).netloc.replace(".", "_").replace("www_", "")
+    
+    console.print(f"\n[bold]Capturing: {url}[/bold]\n")
+    
+    result = capture_page(url, Path(output), name)
+    
+    if result.error:
+        console.print(f"[red]Error: {result.error}[/red]")
+        return
+    
+    console.print(f"[green]✅ SiFR:[/green] {result.sifr_path}")
+    console.print(f"[green]✅ HTML:[/green] {result.html_path}")
+    console.print(f"[green]✅ Screenshot:[/green] {result.screenshot_path}")
+    console.print(f"[green]✅ AXTree:[/green] {result.axtree_path}")
+    console.print(f"\n[bold]Done! Run:[/bold] sifr-bench run --formats sifr,html_raw")
+    
 if __name__ == "__main__":
     main()
