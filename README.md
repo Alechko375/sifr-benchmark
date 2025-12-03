@@ -3,6 +3,19 @@
 **How well do AI agents understand web UI?**  
 Benchmark comparing SiFR vs HTML vs AXTree vs Screenshots.
 
+## Prerequisites
+
+### Element-to-LLM Chrome Extension
+
+To capture web pages in SiFR format, install the Element-to-LLM browser extension:
+
+1. **Chrome Web Store**: [Element-to-LLM](https://chrome.google.com/webstore/detail/element-to-llm/YOUR_ID)
+2. Open any webpage
+3. Click extension icon → **Capture as SiFR**
+4. Save the `.sifr` file to `examples/` or `datasets/formats/sifr/`
+
+> Without this extension, you can only run benchmarks on pre-captured pages.
+
 ## Results
 
 | Format | Tokens (avg) | Accuracy | Cost/Task |
@@ -30,17 +43,36 @@ btn015:
 
 Full spec: [SPEC.md](SPEC.md)
 
-## Run the Benchmark
+## Installation
 
 ```bash
-# Install
-npm install -g sifr-benchmark
+pip install sifr-benchmark
+```
 
-# Run on your site
-sifr-bench https://example.com
+## Quick Start
 
-# Run full suite (Tranco Top 100)
-sifr-bench --suite tranco-100
+### 1. Capture pages (using Element-to-LLM extension)
+
+1. Install [Element-to-LLM](https://chrome.google.com/webstore/detail/element-to-llm/) extension
+2. Open target page (e.g., Amazon product page)
+3. Click extension → **Export SiFR**
+4. Save as `examples/my_page.sifr`
+
+### 2. Run benchmark
+
+```bash
+# Set API keys
+export OPENAI_API_KEY=sk-...
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Run benchmark
+sifr-bench run --models gpt-4o-mini,claude-haiku --formats sifr,html_raw
+
+# Validate your SiFR files
+sifr-bench validate examples/
+
+# View info
+sifr-bench info
 ```
 
 ## Repository Structure
