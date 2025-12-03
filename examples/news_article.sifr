@@ -1,0 +1,217 @@
+====METADATA====
+format: sifr-v2.0
+url: https://news.example.com/tech/ai-breakthrough-2024
+title: "AI Achieves Major Breakthrough in Scientific Research - TechNews"
+timestamp: 2024-12-01T09:15:00Z
+viewport:
+  width: 1280
+  height: 800
+stats:
+  total_nodes: 62
+  high_salience: 4
+  med_salience: 22
+  low_salience: 36
+  clusters: 6
+
+====NODES====
+high:
+  button:
+    btn001:
+      text: "Subscribe"
+      position: [1100, 20, 120, 40]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_header
+    btn002:
+      text: "Share"
+      position: [900, 180, 80, 36]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_article
+  input:
+    inp001:
+      placeholder: "Your email"
+      position: [200, 700, 300, 44]
+      state: enabled
+      actions: [fillable]
+      cluster: cluster_newsletter
+  link:
+    lnk001:
+      text: "Read Full Report →"
+      href: "/reports/ai-2024"
+      position: [200, 600, 150, 24]
+      cluster: cluster_article
+
+med:
+  link:
+    lnk002:
+      text: "Home"
+      href: "/"
+      position: [20, 20, 50, 20]
+      cluster: cluster_header
+    lnk003:
+      text: "Tech"
+      href: "/tech"
+      position: [80, 20, 40, 20]
+      cluster: cluster_header
+    lnk004:
+      text: "Science"
+      href: "/science"
+      position: [130, 20, 60, 20]
+      cluster: cluster_header
+    lnk005:
+      text: "Dr. Sarah Chen"
+      href: "/author/sarah-chen"
+      position: [200, 180, 120, 20]
+      cluster: cluster_article
+    lnk006:
+      text: "Previous Article"
+      href: "/tech/quantum-computing"
+      position: [200, 650, 120, 20]
+      cluster: cluster_footer
+    lnk007:
+      text: "Next Article"
+      href: "/tech/robotics-update"
+      position: [900, 650, 100, 20]
+      cluster: cluster_footer
+  button:
+    btn003:
+      text: "🔖"
+      aria_label: "Bookmark this article"
+      position: [990, 180, 36, 36]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_article
+    btn004:
+      text: "💬 47"
+      aria_label: "View 47 comments"
+      position: [1036, 180, 60, 36]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_article
+  image:
+    img001:
+      alt: "AI neural network visualization"
+      position: [200, 220, 700, 350]
+      cluster: cluster_article
+  text:
+    txt001:
+      content: "December 1, 2024 · 8 min read"
+      position: [330, 180, 180, 20]
+      cluster: cluster_article
+    txt002:
+      content: "BREAKING"
+      position: [200, 120, 80, 24]
+      cluster: cluster_article
+    txt003:
+      content: "Subscribe to our newsletter for weekly updates"
+      position: [200, 670, 350, 20]
+      cluster: cluster_newsletter
+
+low:
+  text:
+    txt004:
+      content: "AI Achieves Major Breakthrough in Scientific Research"
+      position: [200, 140, 700, 36]
+      cluster: cluster_article
+    txt005:
+      content: "Researchers announce significant advancement in machine learning capabilities..."
+      position: [200, 580, 700, 20]
+      truncated: true
+      cluster: cluster_article
+    txt006:
+      content: "© 2024 TechNews. All rights reserved."
+      position: [500, 750, 280, 16]
+      cluster: cluster_footer
+  container:
+    div001:
+      role: banner
+      position: [0, 0, 1280, 60]
+      cluster: cluster_header
+    div002:
+      role: article
+      position: [200, 100, 800, 550]
+      cluster: cluster_article
+    div003:
+      role: complementary
+      position: [1020, 100, 240, 400]
+      cluster: cluster_sidebar
+
+====RELATIONS====
+groups:
+  nav_main:
+    orientation: horizontal
+    members: [lnk002, lnk003, lnk004]
+  social_actions:
+    orientation: horizontal
+    members: [btn002, btn003, btn004]
+  article_nav:
+    orientation: horizontal
+    members: [lnk006, lnk007]
+
+pairs:
+  btn002:
+    lnk005: "right-of(560px)"
+  img001:
+    txt004: "below(80px)"
+  inp001:
+    txt003: "below(20px)"
+    btn001: "left-of(580px)"
+
+clusters:
+  cluster_header:
+    role: header
+    grid_position: [0-12, 0-1]
+    members: [lnk002, lnk003, lnk004, btn001]
+  cluster_article:
+    role: main-content
+    grid_position: [1-9, 1-9]
+    members: [txt002, txt004, lnk005, txt001, btn002, btn003, btn004, img001]
+  cluster_sidebar:
+    role: sidebar
+    grid_position: [9-12, 1-7]
+    members: [related_articles]
+  cluster_newsletter:
+    role: newsletter
+    grid_position: [1-6, 9-10]
+    members: [txt003, inp001]
+  cluster_footer:
+    role: footer
+    grid_position: [0-12, 10-12]
+    members: [lnk006, lnk007, txt006]
+
+====SUMMARY====
+page:
+  purpose: "News article about AI breakthrough"
+  primary_action: "Subscribe"
+  key_info:
+    - "author: Dr. Sarah Chen"
+    - "published: December 1, 2024"
+    - "read_time: 8 min"
+    - "comments: 47"
+    - "category: Tech / AI"
+
+layout:
+  grid: 12x12
+  regions:
+    - id: header
+      position: [0-12, 0-1]
+      contains: [nav, subscribe]
+    - id: article
+      position: [1-9, 1-9]
+      contains: [headline, byline, hero-image, content]
+    - id: sidebar
+      position: [9-12, 1-7]
+      contains: [related-articles, ads]
+    - id: newsletter
+      position: [1-6, 9-10]
+      contains: [email-signup]
+    - id: footer
+      position: [0-12, 10-12]
+      contains: [pagination, copyright]
+
+interactive:
+  buttons: 4
+  links: 7
+  inputs: 1
+  forms: 1
