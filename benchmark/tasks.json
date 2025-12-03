@@ -1,0 +1,221 @@
+{
+  "version": "1.0",
+  "total_tasks": 25,
+  "categories": {
+    "navigation": 5,
+    "extraction": 6,
+    "interaction": 5,
+    "summarization": 3,
+    "accessibility": 3,
+    "comparison": 3
+  },
+  "tasks": [
+    {
+      "id": "nav_01",
+      "category": "navigation",
+      "question": "Where is the main navigation menu?",
+      "scoring": "element_id",
+      "difficulty": "easy"
+    },
+    {
+      "id": "nav_02",
+      "category": "navigation",
+      "question": "Find the search input field.",
+      "scoring": "element_id",
+      "difficulty": "easy"
+    },
+    {
+      "id": "nav_03",
+      "category": "navigation",
+      "question": "Where is the user account or login button?",
+      "scoring": "element_id",
+      "difficulty": "medium"
+    },
+    {
+      "id": "nav_04",
+      "category": "navigation",
+      "question": "Find the footer section.",
+      "scoring": "element_id",
+      "difficulty": "easy"
+    },
+    {
+      "id": "nav_05",
+      "category": "navigation",
+      "question": "Where is the primary call-to-action button?",
+      "scoring": "element_id",
+      "difficulty": "medium"
+    },
+    {
+      "id": "ext_01",
+      "category": "extraction",
+      "question": "What is the main heading or title of this page?",
+      "scoring": "text_match",
+      "difficulty": "easy"
+    },
+    {
+      "id": "ext_02",
+      "category": "extraction",
+      "question": "What is the price shown on this page?",
+      "scoring": "text_match",
+      "applicable_to": ["ecommerce"],
+      "difficulty": "easy"
+    },
+    {
+      "id": "ext_03",
+      "category": "extraction",
+      "question": "How many items are in the navigation menu?",
+      "scoring": "numeric",
+      "difficulty": "medium"
+    },
+    {
+      "id": "ext_04",
+      "category": "extraction",
+      "question": "What is the product/article rating?",
+      "scoring": "text_match",
+      "applicable_to": ["ecommerce", "news"],
+      "difficulty": "medium"
+    },
+    {
+      "id": "ext_05",
+      "category": "extraction",
+      "question": "Who is the author or seller?",
+      "scoring": "text_match",
+      "applicable_to": ["news", "ecommerce"],
+      "difficulty": "medium"
+    },
+    {
+      "id": "ext_06",
+      "category": "extraction",
+      "question": "What is the publication or listing date?",
+      "scoring": "text_match",
+      "difficulty": "hard"
+    },
+    {
+      "id": "int_01",
+      "category": "interaction",
+      "question": "List all buttons on this page.",
+      "scoring": "precision_recall",
+      "difficulty": "medium"
+    },
+    {
+      "id": "int_02",
+      "category": "interaction",
+      "question": "Which elements are clickable links?",
+      "scoring": "precision_recall",
+      "difficulty": "medium"
+    },
+    {
+      "id": "int_03",
+      "category": "interaction",
+      "question": "Find all form input fields.",
+      "scoring": "precision_recall",
+      "difficulty": "medium"
+    },
+    {
+      "id": "int_04",
+      "category": "interaction",
+      "question": "Which element should I click to submit the form?",
+      "scoring": "element_id",
+      "applicable_to": ["forms"],
+      "difficulty": "easy"
+    },
+    {
+      "id": "int_05",
+      "category": "interaction",
+      "question": "What happens if I click the main CTA button?",
+      "scoring": "semantic",
+      "difficulty": "hard"
+    },
+    {
+      "id": "sum_01",
+      "category": "summarization",
+      "question": "What is the main purpose of this page?",
+      "scoring": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "sum_02",
+      "category": "summarization",
+      "question": "Describe the page layout in 2-3 sentences.",
+      "scoring": "semantic",
+      "difficulty": "medium"
+    },
+    {
+      "id": "sum_03",
+      "category": "summarization",
+      "question": "What are the main sections visible on this page?",
+      "scoring": "precision_recall",
+      "difficulty": "medium"
+    },
+    {
+      "id": "acc_01",
+      "category": "accessibility",
+      "question": "Which images lack alt text?",
+      "scoring": "precision_recall",
+      "difficulty": "hard"
+    },
+    {
+      "id": "acc_02",
+      "category": "accessibility",
+      "question": "Are there any buttons without accessible labels?",
+      "scoring": "precision_recall",
+      "difficulty": "hard"
+    },
+    {
+      "id": "acc_03",
+      "category": "accessibility",
+      "question": "What is the keyboard navigation order for interactive elements?",
+      "scoring": "sequence",
+      "difficulty": "hard"
+    },
+    {
+      "id": "cmp_01",
+      "category": "comparison",
+      "question": "Which product/item has the highest price?",
+      "scoring": "element_id",
+      "applicable_to": ["ecommerce"],
+      "difficulty": "medium"
+    },
+    {
+      "id": "cmp_02",
+      "category": "comparison",
+      "question": "Compare the sizes of the header and footer sections.",
+      "scoring": "semantic",
+      "difficulty": "medium"
+    },
+    {
+      "id": "cmp_03",
+      "category": "comparison",
+      "question": "Which section contains the most interactive elements?",
+      "scoring": "element_id",
+      "difficulty": "hard"
+    }
+  ],
+  "scoring_types": {
+    "element_id": {
+      "description": "Exact match of element ID or selector",
+      "values": [0, 1]
+    },
+    "text_match": {
+      "description": "Fuzzy text matching with normalization",
+      "values": [0, 0.5, 1]
+    },
+    "numeric": {
+      "description": "Exact numeric match",
+      "values": [0, 1]
+    },
+    "precision_recall": {
+      "description": "F1 score of element sets",
+      "values": "continuous 0-1"
+    },
+    "semantic": {
+      "description": "LLM-judged semantic correctness",
+      "values": "continuous 0-1"
+    },
+    "sequence": {
+      "description": "Order-aware list comparison",
+      "values": "continuous 0-1"
+    }
+  },
+  "prompt_template": "You are analyzing a webpage. Format: {format_name}\n\nContext:\n{context}\n\nQuestion: {question}\n\nProvide:\n1. ANSWER: [your answer]\n2. CONFIDENCE: [0-100]\n3. EVIDENCE: [element IDs or quotes supporting your answer]"
+}
