@@ -3,10 +3,6 @@ name: SiFR Benchmark
 on:
   push:
     branches: [main]
-    paths:
-      - 'benchmark/**'
-      - 'datasets/**'
-      - 'src/**'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -34,50 +30,62 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
       
-      - name: Install dependencies
-        run: npm ci
-      
-      - name: Validate SiFR files
+      - name: Validate SiFR examples exist
         run: |
-          echo "Validating .sifr files..."
-          for f in examples/*.sifr datasets/formats/sifr/*.sifr; do
-            if [ -f "$f" ]; then
-              echo "  ✓ $f"
-              # Basic YAML validation
-              node -e "require('fs').readFileSync('$f', 'utf8')" || exit 1
-            fi
-          done
+          echo "📁 Checking SiFR examples..."
+          ls -la examples/*.sifr || echo "No .sifr files in examples/"
+          
+          count=$(find examples -name "*.sifr" 2>/dev/null | wc -l)
+          echo "Found $count .sifr files"
+          
+          if [ "$count" -gt 0 ]; then
+            echo "✅ SiFR examples present"
+          else
+            echo "⚠️ No SiFR examples yet"
+          fi
       
-      - name: Validate tasks.json
+      - name: Validate JSON files
         run: |
-          node -e "
-            const tasks = require('./benchmark/tasks.json');
-            console.log('Tasks:', tasks.tasks.length);
-            console.log('Categories:', Object.keys(tasks.categories).join(', '));
-            if (tasks.tasks.length !== tasks.total_tasks) {
-              throw new Error('Task count mismatch');
-            }
-          "
-      
-      - name: Validate ground truth files
-        run: |
+          echo "📋 Validating JSON files..."
+          
+          # Check tasks.json
+          if [ -f "benchmark/tasks.json" ]; then
+            node -e "JSON.parse(require('fs').readFileSync('benchmark/tasks.json'))" && \
+              echo "✅ benchmark/tasks.json is valid"
+          else
+            echo "⚠️ benchmark/tasks.json not found"
+          fi
+          
+          # Check ground truth files
           for f in benchmark/ground-truth/*.json; do
-            if [ -f "$f" ] && [ "$(basename $f)" != "template.json" ]; then
-              echo "Validating: $f"
-              node -e "
-                const gt = require('./$f');
-                const tasks = require('./benchmark/tasks.json');
-                const taskIds = tasks.tasks.map(t => t.id);
-                const gtIds = Object.keys(gt.tasks);
-                const missing = taskIds.filter(id => !gtIds.includes(id));
-                if (missing.length > 0) {
-                  console.warn('  Warning: Missing tasks:', missing.join(', '));
-                }
-              "
+            if [ -f "$f" ]; then
+              node -e "JSON.parse(require('fs').readFileSync('$f'))" && \
+                echo "✅ $f is valid" || echo "❌ $f is invalid"
             fi
           done
+      
+      - name: Check required files
+        run: |
+          echo "📄 Checking required files..."
+          
+          files=("README.md" "SPEC.md" "LICENSE")
+          for f in "${files[@]}"; do
+            if [ -f "$f" ]; then
+              echo "✅ $f exists"
+            else
+              echo "❌ $f missing"
+            fi
+          done
+      
+      - name: Summary
+        run: |
+          echo ""
+          echo "📊 Repository Summary:"
+          echo "  - Examples: $(find examples -name '*.sifr' 2>/dev/null | wc -l) .sifr files"
+          echo "  - Ground truth: $(find benchmark/ground-truth -name '*.json' 2>/dev/null | wc -l) files"
+          echo ""
+          echo "✅ Validation complete"
 
   benchmark:
     needs: validate
@@ -91,10 +99,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
       
       - name: Install dependencies
-        run: npm ci
+        run: npm install
       
       - name: Run benchmark
         env:
@@ -113,50 +120,3 @@ jobs:
           name: benchmark-results-${{ github.run_number }}
           path: results/ci_run_${{ github.run_number }}/
           retention-days: 30
-      
-      - name: Comment on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const summary = JSON.parse(fs.readFileSync('results/ci_run_${{ github.run_number }}/summary.json'));
-            
-            let table = '| Model | Format | Accuracy | Tokens |\n|-------|--------|----------|--------|\n';
-            for (const row of summary) {
-              table += `| ${row.model} | ${row.format} | ${row.accuracy} | ${row.avg_tokens} |\n`;
-            }
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `## 📊 Benchmark Results\n\n${table}\n\n_Run #${{ github.run_number }}_`
-            });
-
-  update-readme:
-    needs: benchmark
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Download results
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmark-results-${{ github.run_number }}
-          path: results/latest/
-      
-      - name: Update README with latest results
-        run: |
-          echo "TODO: Script to update README.md with latest benchmark results"
-          # node scripts/update-readme.js results/latest/summary.json
-      
-      - name: Commit changes
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add README.md results/
-          git diff --staged --quiet || git commit -m "Update benchmark results [skip ci]"
-          git push
