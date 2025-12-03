@@ -14,6 +14,7 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 import json
 import os
+import time
 
 from . import __version__
 from .runner import BenchmarkRunner
@@ -111,7 +112,6 @@ def run(models, formats, pages, runs, output, tasks):
     if output:
         output_dir = Path(output)
     else:
-        import time
         output_dir = Path(f"results/run_{int(time.time())}")
     
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -225,6 +225,7 @@ to describe web UI for LLMs. 70% fewer tokens, 2x accuracy.
 """
     console.print(info_text)
 
+
 @main.command()
 @click.argument("url")
 @click.option("--name", "-n", default=None, help="Base name for output files")
@@ -255,6 +256,154 @@ def capture(url, name, output):
     console.print(f"[green]✅ Screenshot:[/green] {result.screenshot_path}")
     console.print(f"[green]✅ AXTree:[/green] {result.axtree_path}")
     console.print(f"\n[bold]Done! Run:[/bold] sifr-bench run --formats sifr,html_raw")
+
+
+@main.command()
+@click.argument("page_name")
+@click.option("--base-dir", "-d", default=".", help="Base directory")
+def ground_truth(page_name, base_dir):
+    """Generate ground truth for a page using GPT-4o Vision."""
+    from .ground_truth import generate_ground_truth_for_page
     
+    console.print(f"\n[bold]Generating ground truth for: {page_name}[/bold]\n")
+    
+    result = generate_ground_truth_for_page(page_name, Path(base_dir))
+    
+    if "error" in result:
+        console.print(f"[red]Error: {result['error']}[/red]")
+        return
+    
+    console.print("[green]✅ Ground truth generated![/green]")
+    console.print(f"\nTitle: {result.get('title', 'N/A')}")
+    console.print(f"Navigation: {result.get('navigation', {}).get('items', [])}")
+    console.print(f"Primary button: {result.get('primary_button', {}).get('text', 'N/A')}")
+    
+    if result.get("_meta", {}).get("tokens"):
+        console.print(f"\nTokens used: {result['_meta']['tokens']}")
+
+
+@main.command()
+@click.argument("url")
+@click.argument("results_file", type=click.Path(exists=True))
+@click.option("--headless/--no-headless", default=True, help="Run browser in headless mode")
+def verify(url, results_file, headless):
+    """Verify benchmark results by executing actions."""
+    from .verify import verify_from_file
+    
+    console.print(f"\n[bold]Verifying results: {results_file}[/bold]\n")
+    
+    results = verify_from_file(url, Path(results_file), headless)
+    
+    # Count successes per format
+    format_stats = {}
+    for r in results:
+        if r.format not in format_stats:
+            format_stats[r.format] = {"success": 0, "total": 0}
+        format_stats[r.format]["total"] += 1
+        if r.action_success:
+            format_stats[r.format]["success"] += 1
+    
+    # Display results
+    table = Table(title="Verification Results")
+    table.add_column("Format", style="cyan")
+    table.add_column("Success", style="green")
+    table.add_column("Total", style="yellow")
+    table.add_column("Rate", style="magenta")
+    
+    for fmt, stats in format_stats.items():
+        rate = f"{stats['success']/stats['total']*100:.1f}%" if stats['total'] > 0 else "N/A"
+        table.add_row(fmt, str(stats['success']), str(stats['total']), rate)
+    
+    console.print(table)
+
+
+@main.command()
+@click.argument("url")
+@click.option("--name", "-n", default=None, help="Page name")
+@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
+@click.option("--delay", "-d", default=60, type=int, help="Delay between heavy formats (seconds)")
+def full_benchmark(url, name, models, delay):
+    """Run full benchmark: capture → ground truth → test → verify."""
+    from .capture import capture_page
+    from .ground_truth import generate_ground_truth_for_page
+    
+    if not name:
+        from urllib.parse import urlparse
+        name = urlparse(url).netloc.replace(".", "_").replace("www_", "")
+    
+    console.print(f"\n[bold blue]🚀 Full Benchmark: {url}[/bold blue]\n")
+    
+    # Step 1: Capture
+    console.print("[bold]Step 1/4: Capturing page...[/bold]")
+    result = capture_page(url, Path("datasets/formats"), name)
+    if result.error:
+        console.print(f"[red]Capture error: {result.error}[/red]")
+        return
+    console.print("[green]✅ Captured[/green]\n")
+    
+    # Step 2: Ground truth
+    console.print("[bold]Step 2/4: Generating ground truth (GPT-4o Vision)...[/bold]")
+    gt = generate_ground_truth_for_page(name)
+    if "error" in gt:
+        console.print(f"[red]Ground truth error: {gt['error']}[/red]")
+        return
+    console.print("[green]✅ Ground truth generated[/green]\n")
+    
+    # Step 3: Benchmark each format with delays
+    console.print("[bold]Step 3/4: Running benchmark...[/bold]")
+    
+    formats = ["sifr", "axtree", "html_raw"]
+    all_results = []
+    
+    for i, fmt in enumerate(formats):
+        console.print(f"  Testing format: {fmt}")
+        
+        runner = BenchmarkRunner(
+            models=models.split(","),
+            formats=[fmt],
+            pages=[name],
+            runs=1
+        )
+        results = runner.run()
+        all_results.extend(results)
+        
+        # Delay between formats (especially before HTML)
+        if i < len(formats) - 1:
+            if fmt == "html_raw" or formats[i+1] == "html_raw":
+                console.print(f"  [yellow]Waiting {delay}s for rate limit...[/yellow]")
+                time.sleep(delay)
+            else:
+                time.sleep(5)
+    
+    console.print("[green]✅ Benchmark complete[/green]\n")
+    
+    # Step 4: Summary
+    console.print("[bold]Step 4/4: Results[/bold]")
+    
+    table = Table(title="Full Benchmark Results")
+    table.add_column("Format", style="cyan")
+    table.add_column("Avg Tokens", style="yellow")
+    table.add_column("Avg Latency", style="blue")
+    
+    # Aggregate
+    format_data = {}
+    for r in all_results:
+        fmt = r.get("format")
+        if fmt not in format_data:
+            format_data[fmt] = {"tokens": [], "latency": []}
+        if r.get("tokens"):
+            format_data[fmt]["tokens"].append(r["tokens"])
+        if r.get("latency_ms"):
+            format_data[fmt]["latency"].append(r["latency_ms"])
+    
+    for fmt, data in format_data.items():
+        avg_tokens = int(sum(data["tokens"]) / len(data["tokens"])) if data["tokens"] else 0
+        avg_latency = f"{int(sum(data['latency']) / len(data['latency']))}ms" if data["latency"] else "N/A"
+        table.add_row(fmt, str(avg_tokens), avg_latency)
+    
+    console.print(table)
+    console.print(f"\n[green]✅ Full benchmark complete![/green]")
+
+
 if __name__ == "__main__":
     main()
