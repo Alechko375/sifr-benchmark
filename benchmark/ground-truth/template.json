@@ -1,0 +1,135 @@
+{
+  "page_id": "PAGE_NAME",
+  "source_url": "https://example.com/page",
+  "category": "ecommerce|news|saas|forms|social",
+  "annotated_by": "YOUR_NAME",
+  "annotated_at": "2024-12-01",
+  "notes": "Any general notes about this page",
+  "tasks": {
+    "nav_01": {
+      "question": "Where is the main navigation menu?",
+      "answer": "ELEMENT_ID or description",
+      "notes": ""
+    },
+    "nav_02": {
+      "question": "Find the search input field.",
+      "answer": "",
+      "notes": ""
+    },
+    "nav_03": {
+      "question": "Where is the user account or login button?",
+      "answer": "",
+      "notes": ""
+    },
+    "nav_04": {
+      "question": "Find the footer section.",
+      "answer": "",
+      "notes": ""
+    },
+    "nav_05": {
+      "question": "Where is the primary call-to-action button?",
+      "answer": "",
+      "notes": ""
+    },
+    "ext_01": {
+      "question": "What is the main heading or title of this page?",
+      "answer": "",
+      "notes": ""
+    },
+    "ext_02": {
+      "question": "What is the price shown on this page?",
+      "answer": "",
+      "notes": "Use 'not_applicable' if not a product page"
+    },
+    "ext_03": {
+      "question": "How many items are in the navigation menu?",
+      "answer": "",
+      "notes": ""
+    },
+    "ext_04": {
+      "question": "What is the product/article rating?",
+      "answer": "",
+      "notes": "Use 'not_visible' if no rating shown"
+    },
+    "ext_05": {
+      "question": "Who is the author or seller?",
+      "answer": "",
+      "notes": ""
+    },
+    "ext_06": {
+      "question": "What is the publication or listing date?",
+      "answer": "",
+      "notes": ""
+    },
+    "int_01": {
+      "question": "List all buttons on this page.",
+      "answer": "btn001, btn002, btn003",
+      "notes": "Comma-separated element IDs"
+    },
+    "int_02": {
+      "question": "Which elements are clickable links?",
+      "answer": "",
+      "notes": ""
+    },
+    "int_03": {
+      "question": "Find all form input fields.",
+      "answer": "",
+      "notes": ""
+    },
+    "int_04": {
+      "question": "Which element should I click to submit the form?",
+      "answer": "",
+      "notes": "Use 'not_applicable' if no form"
+    },
+    "int_05": {
+      "question": "What happens if I click the main CTA button?",
+      "answer": "",
+      "notes": "Describe expected action"
+    },
+    "sum_01": {
+      "question": "What is the main purpose of this page?",
+      "answer": "",
+      "notes": ""
+    },
+    "sum_02": {
+      "question": "Describe the page layout in 2-3 sentences.",
+      "answer": "",
+      "notes": ""
+    },
+    "sum_03": {
+      "question": "What are the main sections visible on this page?",
+      "answer": "",
+      "notes": "Comma-separated section names or cluster IDs"
+    },
+    "acc_01": {
+      "question": "Which images lack alt text?",
+      "answer": "",
+      "notes": "Use 'none' if all have alt text"
+    },
+    "acc_02": {
+      "question": "Are there any buttons without accessible labels?",
+      "answer": "",
+      "notes": ""
+    },
+    "acc_03": {
+      "question": "What is the keyboard navigation order for interactive elements?",
+      "answer": "",
+      "notes": "Comma-separated element IDs in order"
+    },
+    "cmp_01": {
+      "question": "Which product/item has the highest price?",
+      "answer": "",
+      "notes": "Use 'not_applicable' for single-product pages"
+    },
+    "cmp_02": {
+      "question": "Compare the sizes of the header and footer sections.",
+      "answer": "",
+      "notes": ""
+    },
+    "cmp_03": {
+      "question": "Which section contains the most interactive elements?",
+      "answer": "",
+      "notes": ""
+    }
+  }
+}
