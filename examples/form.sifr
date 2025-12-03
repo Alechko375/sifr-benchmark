@@ -1,0 +1,280 @@
+====METADATA====
+format: sifr-v2.0
+url: https://gov.example.com/forms/application
+title: "Application Form - Government Services"
+timestamp: 2024-12-01T11:00:00Z
+viewport:
+  width: 1280
+  height: 900
+stats:
+  total_nodes: 58
+  high_salience: 5
+  med_salience: 24
+  low_salience: 29
+  clusters: 5
+
+====NODES====
+high:
+  button:
+    btn001:
+      text: "Submit Application"
+      position: [540, 780, 200, 48]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_actions
+    btn002:
+      text: "Save Draft"
+      position: [340, 780, 120, 48]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_actions
+  input:
+    inp001:
+      label: "Full Name"
+      placeholder: "Enter your full legal name"
+      position: [340, 200, 400, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_personal
+    inp002:
+      label: "Email Address"
+      type: email
+      placeholder: "you@example.com"
+      position: [340, 280, 400, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_personal
+    inp003:
+      label: "Phone Number"
+      type: tel
+      placeholder: "(555) 123-4567"
+      position: [340, 360, 400, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_personal
+
+med:
+  input:
+    inp004:
+      label: "Date of Birth"
+      type: date
+      position: [340, 440, 200, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_personal
+    inp005:
+      label: "Social Security Number"
+      type: password
+      placeholder: "XXX-XX-XXXX"
+      position: [560, 440, 180, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_personal
+    inp006:
+      label: "Street Address"
+      placeholder: "123 Main Street"
+      position: [340, 540, 400, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_address
+    inp007:
+      label: "City"
+      position: [340, 620, 200, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_address
+    inp008:
+      label: "ZIP Code"
+      position: [640, 620, 100, 44]
+      state: enabled
+      required: true
+      actions: [fillable]
+      cluster: cluster_address
+  select:
+    sel001:
+      label: "State"
+      options: ["Select state...", "CA", "NY", "TX", "FL", "..."]
+      position: [560, 620, 70, 44]
+      state: enabled
+      required: true
+      actions: [clickable]
+      cluster: cluster_address
+    sel002:
+      label: "Application Type"
+      options: ["New Application", "Renewal", "Update Information"]
+      position: [340, 700, 200, 44]
+      state: enabled
+      required: true
+      actions: [clickable]
+      cluster: cluster_type
+  checkbox:
+    chk001:
+      label: "I certify that all information provided is accurate"
+      position: [340, 740, 400, 24]
+      state: unchecked
+      required: true
+      actions: [clickable]
+      cluster: cluster_actions
+  link:
+    lnk001:
+      text: "Privacy Policy"
+      href: "/privacy"
+      position: [340, 830, 100, 20]
+      cluster: cluster_footer
+    lnk002:
+      text: "Terms of Service"
+      href: "/terms"
+      position: [460, 830, 120, 20]
+      cluster: cluster_footer
+    lnk003:
+      text: "Need Help?"
+      href: "/help"
+      position: [600, 830, 80, 20]
+      cluster: cluster_footer
+  text:
+    txt001:
+      content: "* Required field"
+      position: [340, 160, 100, 16]
+      cluster: cluster_header
+    txt002:
+      content: "Personal Information"
+      position: [340, 180, 180, 24]
+      cluster: cluster_personal
+    txt003:
+      content: "Address"
+      position: [340, 520, 80, 24]
+      cluster: cluster_address
+    txt004:
+      content: "Application Details"
+      position: [340, 680, 160, 24]
+      cluster: cluster_type
+
+low:
+  text:
+    txt005:
+      content: "Government Services Application"
+      position: [340, 80, 400, 32]
+      cluster: cluster_header
+    txt006:
+      content: "Step 1 of 3: Basic Information"
+      position: [340, 120, 200, 20]
+      cluster: cluster_header
+    txt007:
+      content: "Your information is protected under federal privacy laws"
+      position: [340, 850, 350, 16]
+      cluster: cluster_footer
+  container:
+    form001:
+      role: form
+      position: [320, 160, 440, 700]
+      cluster: cluster_form
+  image:
+    img001:
+      alt: "Government seal"
+      position: [100, 80, 60, 60]
+      cluster: cluster_header
+
+====RELATIONS====
+groups:
+  personal_fields:
+    orientation: vertical
+    members: [inp001, inp002, inp003, inp004, inp005]
+  address_fields:
+    orientation: vertical
+    members: [inp006, inp007, sel001, inp008]
+  action_buttons:
+    orientation: horizontal
+    members: [btn002, btn001]
+  footer_links:
+    orientation: horizontal
+    members: [lnk001, lnk002, lnk003]
+
+pairs:
+  inp001:
+    txt002: "below(20px)"
+    inp002: "above(36px)"
+  inp002:
+    inp001: "below(36px)"
+  btn001:
+    chk001: "below(40px)"
+    btn002: "right-of(80px)"
+  sel001:
+    inp007: "right-of(20px)"
+    inp008: "left-of(10px)"
+
+clusters:
+  cluster_header:
+    role: header
+    grid_position: [0-12, 0-2]
+    members: [img001, txt005, txt006, txt001]
+  cluster_personal:
+    role: form-section
+    grid_position: [3-9, 2-6]
+    members: [txt002, inp001, inp002, inp003, inp004, inp005]
+  cluster_address:
+    role: form-section
+    grid_position: [3-9, 6-8]
+    members: [txt003, inp006, inp007, sel001, inp008]
+  cluster_type:
+    role: form-section
+    grid_position: [3-9, 8-9]
+    members: [txt004, sel002]
+  cluster_actions:
+    role: form-actions
+    grid_position: [3-9, 9-10]
+    members: [chk001, btn002, btn001]
+  cluster_footer:
+    role: footer
+    grid_position: [3-9, 10-12]
+    members: [lnk001, lnk002, lnk003, txt007]
+
+====SUMMARY====
+page:
+  purpose: "Government application form for collecting personal information"
+  primary_action: "Submit Application"
+  key_info:
+    - "form_type: Multi-step (Step 1 of 3)"
+    - "required_fields: 9"
+    - "sections: Personal Info, Address, Application Type"
+
+layout:
+  grid: 12x12
+  regions:
+    - id: header
+      position: [0-12, 0-2]
+      contains: [logo, title, progress]
+    - id: form
+      position: [3-9, 2-10]
+      contains: [personal-section, address-section, type-section, actions]
+    - id: footer
+      position: [3-9, 10-12]
+      contains: [legal-links, privacy-notice]
+
+interactive:
+  buttons: 2
+  inputs: 8
+  selects: 2
+  checkboxes: 1
+  links: 3
+  forms: 1
+
+validation:
+  required_fields:
+    - inp001  # Full Name
+    - inp002  # Email
+    - inp003  # Phone
+    - inp004  # DOB
+    - inp005  # SSN
+    - inp006  # Street
+    - inp007  # City
+    - sel001  # State
+    - inp008  # ZIP
+    - sel002  # Application Type
+    - chk001  # Certification checkbox
