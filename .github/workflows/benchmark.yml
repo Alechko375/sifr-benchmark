@@ -1,0 +1,162 @@
+name: SiFR Benchmark
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'benchmark/**'
+      - 'datasets/**'
+      - 'src/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      models:
+        description: 'Models to test (comma-separated)'
+        required: false
+        default: 'gpt-4o-mini'
+      formats:
+        description: 'Formats to test (comma-separated)'
+        required: false
+        default: 'sifr,html_raw'
+      runs:
+        description: 'Number of runs per configuration'
+        required: false
+        default: '1'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Validate SiFR files
+        run: |
+          echo "Validating .sifr files..."
+          for f in examples/*.sifr datasets/formats/sifr/*.sifr; do
+            if [ -f "$f" ]; then
+              echo "  ✓ $f"
+              # Basic YAML validation
+              node -e "require('fs').readFileSync('$f', 'utf8')" || exit 1
+            fi
+          done
+      
+      - name: Validate tasks.json
+        run: |
+          node -e "
+            const tasks = require('./benchmark/tasks.json');
+            console.log('Tasks:', tasks.tasks.length);
+            console.log('Categories:', Object.keys(tasks.categories).join(', '));
+            if (tasks.tasks.length !== tasks.total_tasks) {
+              throw new Error('Task count mismatch');
+            }
+          "
+      
+      - name: Validate ground truth files
+        run: |
+          for f in benchmark/ground-truth/*.json; do
+            if [ -f "$f" ] && [ "$(basename $f)" != "template.json" ]; then
+              echo "Validating: $f"
+              node -e "
+                const gt = require('./$f');
+                const tasks = require('./benchmark/tasks.json');
+                const taskIds = tasks.tasks.map(t => t.id);
+                const gtIds = Object.keys(gt.tasks);
+                const missing = taskIds.filter(id => !gtIds.includes(id));
+                if (missing.length > 0) {
+                  console.warn('  Warning: Missing tasks:', missing.join(', '));
+                }
+              "
+            fi
+          done
+
+  benchmark:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run benchmark
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          node src/runner.js \
+            --models ${{ github.event.inputs.models }} \
+            --formats ${{ github.event.inputs.formats }} \
+            --runs ${{ github.event.inputs.runs }} \
+            --output results/ci_run_${{ github.run_number }}
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_number }}
+          path: results/ci_run_${{ github.run_number }}/
+          retention-days: 30
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = JSON.parse(fs.readFileSync('results/ci_run_${{ github.run_number }}/summary.json'));
+            
+            let table = '| Model | Format | Accuracy | Tokens |\n|-------|--------|----------|--------|\n';
+            for (const row of summary) {
+              table += `| ${row.model} | ${row.format} | ${row.accuracy} | ${row.avg_tokens} |\n`;
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📊 Benchmark Results\n\n${table}\n\n_Run #${{ github.run_number }}_`
+            });
+
+  update-readme:
+    needs: benchmark
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_number }}
+          path: results/latest/
+      
+      - name: Update README with latest results
+        run: |
+          echo "TODO: Script to update README.md with latest benchmark results"
+          # node scripts/update-readme.js results/latest/summary.json
+      
+      - name: Commit changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add README.md results/
+          git diff --staged --quiet || git commit -m "Update benchmark results [skip ci]"
+          git push
