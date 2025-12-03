@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sifr-benchmark"
+version = "0.1.0"
+description = "Benchmark for evaluating LLM understanding of web UI: SiFR vs HTML vs AXTree vs Screenshots"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "SiFR Contributors" }
+]
+keywords = [
+    "sifr",
+    "benchmark",
+    "llm",
+    "web-ui",
+    "ai-agents",
+    "web-automation",
+    "accessibility"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "openai>=1.0.0",
+    "anthropic>=0.20.0",
+    "httpx>=0.25.0",
+    "pyyaml>=6.0",
+    "rich>=13.0.0",
+    "click>=8.0.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+capture = [
+    "playwright>=1.40.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.scripts]
+sifr-bench = "sifr_benchmark.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Alechko375/sifr-benchmark"
+Documentation = "https://github.com/Alechko375/sifr-benchmark#readme"
+Repository = "https://github.com/Alechko375/sifr-benchmark"
+Issues = "https://github.com/Alechko375/sifr-benchmark/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sifr_benchmark"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W"]
