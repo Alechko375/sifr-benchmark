@@ -100,7 +100,7 @@ def load_format(page_id: str, format_name: str, base_path: Optional[str] = None)
 
 def validate_sifr_file(path: Path) -> list[str]:
     """
-    Validate a SiFR file.
+    Validate a SiFR file (JSON or YAML format).
     
     Returns list of error messages (empty if valid).
     """
@@ -111,44 +111,28 @@ def validate_sifr_file(path: Path) -> list[str]:
     except Exception as e:
         return [f"Cannot read file: {e}"]
     
-    # Check required sections
+    # Check if JSON format
+    if content.strip().startswith("{"):
+        try:
+            data = json.loads(content)
+            metadata = data.get("====METADATA====", {})
+            if not metadata.get("format"):
+                errors.append("Missing metadata field: format")
+            if not metadata.get("url"):
+                errors.append("Missing metadata field: url")
+            if "====NODES====" not in data:
+                errors.append("Missing NODES section")
+            return errors
+        except json.JSONDecodeError as e:
+            return [f"Invalid JSON: {e}"]
+    
+    # YAML format (legacy)
     required_sections = ["====METADATA====", "====NODES===="]
     for section in required_sections:
         if section not in content:
             errors.append(f"Missing required section: {section}")
     
-    # Check METADATA has required fields
-    if "====METADATA====" in content:
-        metadata_match = re.search(
-            r"====METADATA====\s*(.*?)(?:====|$)", 
-            content, 
-            re.DOTALL
-        )
-        if metadata_match:
-            metadata = metadata_match.group(1)
-            required_fields = ["format:", "url:"]
-            for field in required_fields:
-                if field not in metadata:
-                    errors.append(f"Missing metadata field: {field}")
-    
-    # Check for at least one node
-    if "====NODES====" in content:
-        nodes_match = re.search(
-            r"====NODES====\s*(.*?)(?:====|$)", 
-            content, 
-            re.DOTALL
-        )
-        if nodes_match:
-            nodes = nodes_match.group(1).strip()
-            if not nodes or len(nodes) < 10:
-                errors.append("NODES section appears empty")
-    
-    # Check file size (warn if too large)
-    if len(content) > 500_000:  # 500KB
-        errors.append(f"File is large ({len(content)} bytes), may cause token issues")
-    
     return errors
-
 
 def sifr_to_minimal(content: str) -> str:
     """
