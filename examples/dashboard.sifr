@@ -1,0 +1,265 @@
+====METADATA====
+format: sifr-v2.0
+url: https://app.example.com/dashboard
+title: "Analytics Dashboard - ExampleApp"
+timestamp: 2024-12-01T16:00:00Z
+viewport:
+  width: 1920
+  height: 1080
+stats:
+  total_nodes: 94
+  high_salience: 8
+  med_salience: 35
+  low_salience: 51
+  clusters: 10
+
+====NODES====
+high:
+  button:
+    btn001:
+      text: "Create Report"
+      position: [1720, 20, 140, 40]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_header
+    btn002:
+      text: "Export"
+      position: [1560, 20, 100, 40]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_header
+  input:
+    inp001:
+      placeholder: "Search..."
+      position: [300, 20, 400, 40]
+      state: enabled
+      actions: [fillable]
+      cluster: cluster_header
+  select:
+    sel001:
+      text: "Last 7 days"
+      options: ["Today", "Last 7 days", "Last 30 days", "Last 90 days", "Custom"]
+      position: [1380, 20, 160, 40]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_header
+  link:
+    lnk001:
+      text: "Dashboard"
+      href: "/dashboard"
+      position: [20, 100, 200, 40]
+      state: active
+      cluster: cluster_sidebar
+    lnk002:
+      text: "Analytics"
+      href: "/analytics"
+      position: [20, 150, 200, 40]
+      cluster: cluster_sidebar
+    lnk003:
+      text: "Settings"
+      href: "/settings"
+      position: [20, 600, 200, 40]
+      cluster: cluster_sidebar
+
+med:
+  link:
+    lnk004:
+      text: "Reports"
+      href: "/reports"
+      position: [20, 200, 200, 40]
+      cluster: cluster_sidebar
+    lnk005:
+      text: "Users"
+      href: "/users"
+      position: [20, 250, 200, 40]
+      cluster: cluster_sidebar
+    lnk006:
+      text: "Integrations"
+      href: "/integrations"
+      position: [20, 300, 200, 40]
+      cluster: cluster_sidebar
+  button:
+    btn003:
+      text: "🔔"
+      aria_label: "Notifications (3 new)"
+      position: [1820, 20, 40, 40]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_header
+    btn004:
+      text: "View All"
+      position: [1100, 380, 80, 32]
+      state: enabled
+      actions: [clickable]
+      cluster: cluster_activity
+  container:
+    card001:
+      role: metric
+      position: [260, 100, 280, 140]
+      cluster: cluster_metrics
+    card002:
+      role: metric
+      position: [560, 100, 280, 140]
+      cluster: cluster_metrics
+    card003:
+      role: metric
+      position: [860, 100, 280, 140]
+      cluster: cluster_metrics
+    card004:
+      role: metric
+      position: [1160, 100, 280, 140]
+      cluster: cluster_metrics
+  text:
+    txt001:
+      content: "Total Users"
+      position: [280, 120, 100, 20]
+      cluster: cluster_metrics
+    txt002:
+      content: "12,847"
+      position: [280, 150, 120, 36]
+      cluster: cluster_metrics
+    txt003:
+      content: "+12.5%"
+      position: [280, 190, 60, 16]
+      cluster: cluster_metrics
+    txt004:
+      content: "Revenue"
+      position: [580, 120, 80, 20]
+      cluster: cluster_metrics
+    txt005:
+      content: "$48,294"
+      position: [580, 150, 140, 36]
+      cluster: cluster_metrics
+    txt006:
+      content: "Active Sessions"
+      position: [880, 120, 120, 20]
+      cluster: cluster_metrics
+    txt007:
+      content: "1,429"
+      position: [880, 150, 100, 36]
+      cluster: cluster_metrics
+    txt008:
+      content: "Conversion Rate"
+      position: [1180, 120, 130, 20]
+      cluster: cluster_metrics
+    txt009:
+      content: "3.24%"
+      position: [1180, 150, 80, 36]
+      cluster: cluster_metrics
+
+low:
+  image:
+    img001:
+      alt: "ExampleApp Logo"
+      position: [20, 20, 40, 40]
+      cluster: cluster_header
+  container:
+    chart001:
+      role: chart
+      aria_label: "Revenue over time"
+      position: [260, 260, 580, 300]
+      cluster: cluster_charts
+    chart002:
+      role: chart
+      aria_label: "User activity"
+      position: [860, 260, 580, 300]
+      cluster: cluster_charts
+    table001:
+      role: table
+      aria_label: "Recent activity"
+      position: [260, 580, 580, 300]
+      cluster: cluster_activity
+  text:
+    txt010:
+      content: "Revenue Trend"
+      position: [260, 260, 120, 24]
+      cluster: cluster_charts
+    txt011:
+      content: "User Activity"
+      position: [860, 260, 100, 24]
+      cluster: cluster_charts
+    txt012:
+      content: "Recent Activity"
+      position: [260, 580, 120, 24]
+      cluster: cluster_activity
+
+====RELATIONS====
+groups:
+  nav_sidebar:
+    orientation: vertical
+    members: [lnk001, lnk002, lnk004, lnk005, lnk006, lnk003]
+  metrics_row:
+    orientation: horizontal
+    members: [card001, card002, card003, card004]
+  header_actions:
+    orientation: horizontal
+    members: [sel001, btn002, btn001, btn003]
+
+pairs:
+  txt002:
+    txt001: "below(30px)"
+    txt003: "above(40px)"
+  chart001:
+    card001: "below(120px)"
+  btn001:
+    btn002: "right-of(20px)"
+
+clusters:
+  cluster_header:
+    role: header
+    grid_position: [0-12, 0-1]
+    members: [img001, inp001, sel001, btn002, btn001, btn003]
+  cluster_sidebar:
+    role: navigation
+    grid_position: [0-2, 1-12]
+    members: [lnk001, lnk002, lnk004, lnk005, lnk006, lnk003]
+  cluster_metrics:
+    role: kpi-cards
+    grid_position: [2-12, 1-3]
+    members: [card001, card002, card003, card004]
+  cluster_charts:
+    role: visualizations
+    grid_position: [2-12, 3-7]
+    members: [chart001, chart002]
+  cluster_activity:
+    role: data-table
+    grid_position: [2-7, 7-12]
+    members: [table001, btn004]
+
+====SUMMARY====
+page:
+  purpose: "SaaS analytics dashboard showing key metrics and trends"
+  primary_action: "Create Report"
+  key_info:
+    - "total_users: 12,847 (+12.5%)"
+    - "revenue: $48,294"
+    - "active_sessions: 1,429"
+    - "conversion_rate: 3.24%"
+    - "date_range: Last 7 days"
+
+layout:
+  grid: 12x12
+  regions:
+    - id: header
+      position: [0-12, 0-1]
+      contains: [logo, search, date-filter, actions, notifications]
+    - id: sidebar
+      position: [0-2, 1-12]
+      contains: [navigation]
+    - id: metrics
+      position: [2-12, 1-3]
+      contains: [kpi-cards]
+    - id: charts
+      position: [2-12, 3-7]
+      contains: [revenue-chart, activity-chart]
+    - id: activity
+      position: [2-7, 7-12]
+      contains: [activity-table]
+
+interactive:
+  buttons: 4
+  links: 6
+  inputs: 1
+  selects: 1
+  charts: 2
+  tables: 1
