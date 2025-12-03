@@ -9,7 +9,7 @@ Benchmark comparing SiFR vs HTML vs AXTree vs Screenshots.
 
 To capture web pages in SiFR format, install the Element-to-LLM browser extension:
 
-1. **Chrome Web Store**: [Element-to-LLM](https://chrome.google.com/webstore/detail/element-to-llm/YOUR_ID)
+1. **Chrome Web Store**: [Element-to-LLM](https://chromewebstore.google.com/detail/element-to-llm-dom-captur/oofdfeinchhgnhlikkfdfcldbpcjcgnj)
 2. Open any webpage
 3. Click extension icon → **Capture as SiFR**
 4. Save the `.sifr` file to `examples/` or `datasets/formats/sifr/`
