@@ -146,8 +146,19 @@ def generate_ground_truth(
     if not sifr_content or len(sifr_content.strip()) < 10:
         return {"error": f"SiFR file is empty or too small: {sifr_path}"}
     
-    # Build prompt with SiFR
-    prompt = AGENT_GROUND_TRUTH_PROMPT.format(sifr_content=sifr_content)
+    # Truncate SiFR if too large (GPT-4o has ~128K token limit)
+    MAX_SIFR_CHARS = 50000  # ~12K tokens, safe limit
+    if len(sifr_content) > MAX_SIFR_CHARS:
+        # Try to truncate at a sensible point
+        sifr_content = sifr_content[:MAX_SIFR_CHARS]
+        # Find last complete line
+        last_newline = sifr_content.rfind('\n')
+        if last_newline > MAX_SIFR_CHARS * 0.8:
+            sifr_content = sifr_content[:last_newline]
+        sifr_content += "\n... [truncated - showing first 50KB]"
+    
+    # Build prompt with SiFR (use concatenation, not .format() - SiFR contains {})
+    prompt = AGENT_GROUND_TRUTH_PROMPT.replace("{sifr_content}", sifr_content)
     
     try:
         response = client.chat.completions.create(
