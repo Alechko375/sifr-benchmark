@@ -9,7 +9,7 @@ from typing import Optional
 
 
 def load_sifr(page_id: str, base_dir: Optional[Path] = None) -> str:
-    """Load a SiFR file."""
+    """Load a SiFR file, truncating if too large."""
     paths_to_try = []
     
     # New structure: base_dir/captures/sifr/
@@ -24,7 +24,18 @@ def load_sifr(page_id: str, base_dir: Optional[Path] = None) -> str:
     
     for path in paths_to_try:
         if path.exists():
-            return path.read_text(encoding="utf-8")
+            content = path.read_text(encoding="utf-8")
+            
+            # Truncate if too large (gpt-4o-mini limit ~200K tokens ≈ 600KB)
+            MAX_CHARS = 100000  # ~25K tokens, safe limit
+            if len(content) > MAX_CHARS:
+                content = content[:MAX_CHARS]
+                last_newline = content.rfind('\n')
+                if last_newline > MAX_CHARS * 0.8:
+                    content = content[:last_newline]
+                content += "\n... [truncated]"
+            
+            return content
     
     raise FileNotFoundError(f"SiFR file not found for: {page_id}. Tried: {[str(p) for p in paths_to_try]}")
 
