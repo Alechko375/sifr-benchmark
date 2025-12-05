@@ -53,7 +53,7 @@ pip install sifr-benchmark
 
 ### 1. Capture pages (using Element-to-LLM extension)
 
-1. Install [Element-to-LLM](https://chrome.google.com/webstore/detail/element-to-llm/) extension
+1. Install [Element-to-LLM](https://chromewebstore.google.com/detail/element-to-llm-dom-captur/oofdfeinchhgnhlikkfdfcldbpcjcgnj) extension
 2. Open target page (e.g., Amazon product page)
 3. Click extension → **Export SiFR**
 4. Save as `examples/my_page.sifr`
