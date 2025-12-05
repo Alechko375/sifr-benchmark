@@ -42,12 +42,10 @@ def run(models, formats, pages, runs, output, tasks):
     
     console.print(f"\n[bold blue]🚀 SiFR Benchmark v{__version__}[/bold blue]\n")
     
-    # Parse inputs
     model_list = [m.strip() for m in models.split(",")]
     format_list = [f.strip() for f in formats.split(",")]
     page_list = [p.strip() for p in pages.split(",")] if pages else None
     
-    # Check API keys
     if any("gpt" in m for m in model_list):
         if not os.getenv("OPENAI_API_KEY"):
             console.print("[red]❌ OPENAI_API_KEY not set[/red]")
@@ -58,7 +56,6 @@ def run(models, formats, pages, runs, output, tasks):
             console.print("[red]❌ ANTHROPIC_API_KEY not set[/red]")
             return
     
-    # Display config
     table = Table(title="Configuration")
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
@@ -69,7 +66,6 @@ def run(models, formats, pages, runs, output, tasks):
     console.print(table)
     console.print()
     
-    # Run benchmark
     runner = BenchmarkRunner(
         models=model_list,
         formats=format_list,
@@ -87,7 +83,6 @@ def run(models, formats, pages, runs, output, tasks):
         results = runner.run()
         progress.update(task, completed=True)
     
-    # Display results
     summary = runner.aggregate(results)
     
     results_table = Table(title="Results")
@@ -108,7 +103,6 @@ def run(models, formats, pages, runs, output, tasks):
     
     console.print(results_table)
     
-    # Save results
     if output:
         output_dir = Path(output)
     else:
@@ -174,7 +168,6 @@ def compare(result_dirs):
             with open(summary_path) as f:
                 summaries.append({"dir": d, "data": json.load(f)})
     
-    # Build comparison table
     table = Table(title="Comparison")
     table.add_column("Run", style="cyan")
     table.add_column("Best Model", style="green")
@@ -294,7 +287,6 @@ def verify(url, results_file, headless):
     
     results = verify_from_file(url, Path(results_file), headless)
     
-    # Count successes per format
     format_stats = {}
     for r in results:
         if r.format not in format_stats:
@@ -303,7 +295,6 @@ def verify(url, results_file, headless):
         if r.action_success:
             format_stats[r.format]["success"] += 1
     
-    # Display results
     table = Table(title="Verification Results")
     table.add_column("Format", style="cyan")
     table.add_column("Success", style="green")
@@ -333,7 +324,6 @@ def full_benchmark(url, name, models, delay):
     
     console.print(f"\n[bold blue]🚀 Full Benchmark: {url}[/bold blue]\n")
     
-    # Step 1: Capture
     console.print("[bold]Step 1/4: Capturing page...[/bold]")
     result = capture_page(url, Path("datasets/formats"), name)
     if result.error:
@@ -341,7 +331,6 @@ def full_benchmark(url, name, models, delay):
         return
     console.print("[green]✅ Captured[/green]\n")
     
-    # Step 2: Ground truth
     console.print("[bold]Step 2/4: Generating ground truth (GPT-4o Vision)...[/bold]")
     gt = generate_ground_truth_for_page(name)
     if "error" in gt:
@@ -349,7 +338,6 @@ def full_benchmark(url, name, models, delay):
         return
     console.print("[green]✅ Ground truth generated[/green]\n")
     
-    # Step 3: Benchmark each format with delays
     console.print("[bold]Step 3/4: Running benchmark...[/bold]")
     
     formats = ["sifr", "axtree", "html_raw"]
@@ -367,7 +355,6 @@ def full_benchmark(url, name, models, delay):
         results = runner.run()
         all_results.extend(results)
         
-        # Delay between formats (especially before HTML)
         if i < len(formats) - 1:
             if fmt == "html_raw" or formats[i+1] == "html_raw":
                 console.print(f"  [yellow]Waiting {delay}s for rate limit...[/yellow]")
@@ -377,7 +364,6 @@ def full_benchmark(url, name, models, delay):
     
     console.print("[green]✅ Benchmark complete[/green]\n")
     
-    # Step 4: Summary
     console.print("[bold]Step 4/4: Results[/bold]")
     
     table = Table(title="Full Benchmark Results")
@@ -385,7 +371,6 @@ def full_benchmark(url, name, models, delay):
     table.add_column("Avg Tokens", style="yellow")
     table.add_column("Avg Latency", style="blue")
     
-    # Aggregate
     format_data = {}
     for r in all_results:
         fmt = r.get("format")
@@ -405,9 +390,7 @@ def full_benchmark(url, name, models, delay):
     console.print(f"\n[green]✅ Full benchmark complete![/green]")
 
 
-if __name__ == "__main__":
-    main()
-@cli.command()
+@main.command()
 @click.argument("urls", nargs=-1, required=True)
 @click.option("--extension", "-e", required=True, help="Path to E2LLM extension folder")
 @click.option("--output", "-o", default="./datasets/formats", help="Output directory")
@@ -437,11 +420,11 @@ def capture_e2llm(urls, extension, output, profile):
     console.print(f"\n[green]✅ Captured {len(results)} pages[/green]")
 
 
-@cli.command()
+@main.command()
 @click.argument("urls", nargs=-1, required=True)
 @click.option("--extension", "-e", required=True, help="Path to E2LLM extension folder")
 @click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
-@click.option("--runs", "-r", default=1, help="Number of runs per test")
+@click.option("--runs", "-r", default=1, type=int, help="Number of runs per test")
 def full_benchmark_e2llm(urls, extension, models, runs):
     """Full benchmark using E2LLM extension for capture."""
     import asyncio
@@ -456,7 +439,6 @@ def full_benchmark_e2llm(urls, extension, models, runs):
     console.print(f"[bold]🚀 Full Benchmark with E2LLM[/bold]")
     console.print(f"URLs: {len(urls)}")
     
-    # Step 1: Capture
     console.print("\n[bold]Step 1/3: Capturing with E2LLM...[/bold]")
     results = asyncio.run(capture_multiple(
         urls=list(urls),
@@ -465,32 +447,29 @@ def full_benchmark_e2llm(urls, extension, models, runs):
     ))
     console.print(f"[green]✅ Captured {len(results)} pages[/green]")
     
-    # Step 2: Generate ground truth
     console.print("\n[bold]Step 2/3: Generating ground truth...[/bold]")
-    from .ground_truth import generate_ground_truth
+    from .ground_truth import generate_ground_truth_for_page
     for url in urls:
         page_id = url.replace("https://", "").replace("http://", "")
         page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
         try:
-            generate_ground_truth(page_id)
+            generate_ground_truth_for_page(page_id)
             console.print(f"  ✅ {page_id}")
         except Exception as e:
             console.print(f"  ⚠️ {page_id}: {e}")
     
-    # Step 3: Run benchmark
     console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
     model_list = [m.strip() for m in models.split(",")]
     
     runner = BenchmarkRunner(
         models=model_list,
         formats=["sifr", "html_raw", "axtree"],
-        runs=int(runs)
+        runs=runs
     )
     
-    results = runner.run()
-    summary = runner.aggregate(results)
+    bench_results = runner.run()
+    summary = runner.aggregate(bench_results)
     
-    # Display results
     table = Table(title="Benchmark Results")
     table.add_column("Format")
     table.add_column("Accuracy")
@@ -507,3 +486,7 @@ def full_benchmark_e2llm(urls, extension, models, runs):
     
     console.print(table)
     console.print("\n[green]✅ Benchmark complete![/green]")
+
+
+if __name__ == "__main__":
+    main()
