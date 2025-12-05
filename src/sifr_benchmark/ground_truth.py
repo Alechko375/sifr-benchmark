@@ -1,48 +1,68 @@
 """
-Ground truth generation using GPT-4o Vision.
+Ground truth generation for agent tasks using GPT-4o Vision.
+Generates tasks with element IDs as answers.
 """
 
 import base64
 import json
-import time
 from pathlib import Path
 
-GROUND_TRUTH_PROMPT = """Look at this screenshot of a webpage.
+AGENT_GROUND_TRUTH_PROMPT = """You are analyzing a webpage screenshot alongside its SiFR representation.
 
-Answer these questions about what you SEE in the image.
-Be specific and descriptive. Do NOT use technical terms like CSS selectors or element IDs.
-Describe locations as: top-left, top-center, top-right, center, bottom-left, etc.
+SiFR is a compact format describing UI elements. Each element has an ID like btn001, lnk003, inp001.
 
-Questions:
+Your task: Generate agent tasks where the answer is an element ID from the SiFR.
 
-1. TITLE: What is the main heading or title shown on this page?
+Look at the screenshot to understand WHAT each element does.
+Look at the SiFR to find the correct element ID.
 
-2. NAVIGATION: Where is the main navigation? Describe its location and what links it contains.
+Generate these task types:
 
-3. SEARCH: Is there a search input? Describe its location and placeholder text.
+1. ACTION_CLICK (3-5 tasks): "What element ID should I click to [action]?"
+   - Login/signup buttons
+   - Navigation links
+   - Submit buttons
+   - Menu items
 
-4. PRIMARY_BUTTON: What is the main action button? Describe its text and location.
+2. ACTION_INPUT (1-2 tasks): "What element ID should I use to [input action]?"
+   - Search fields
+   - Text inputs
 
-5. BUTTONS_LIST: List all visible buttons with their text.
+3. ACTION_LOCATE (2-3 tasks): "What element ID contains [content]?"
+   - Main heading
+   - Specific text or logo
+
+Rules:
+- ONLY use element IDs that exist in the SiFR below
+- Each answer must be a single element ID (e.g., "btn001", "lnk007", "inp001")
+- Tasks should be clear and unambiguous
+- Focus on common agent actions: login, search, navigate, submit
 
 Respond ONLY in this JSON format:
 {
-  "title": "exact title text",
-  "navigation": {
-    "location": "top-right",
-    "items": ["link1", "link2"]
-  },
-  "search": {
-    "exists": true,
-    "location": "center",
-    "placeholder": "placeholder text"
-  },
-  "primary_button": {
-    "text": "button text",
-    "location": "center"
-  },
-  "buttons_list": ["button1", "button2"]
+  "page_title": "detected page title",
+  "tasks": [
+    {
+      "id": "act_01",
+      "type": "action_click",
+      "question": "What element ID should I click to login?",
+      "answer": "lnk007",
+      "element_text": "login"
+    },
+    {
+      "id": "act_02", 
+      "type": "action_input",
+      "question": "What element ID should I use to enter a search query?",
+      "answer": "inp001",
+      "element_text": "Search"
+    }
+  ]
 }
+
+SiFR content:
+```
+{sifr_content}
+```
 """
 
 
@@ -52,16 +72,27 @@ def encode_image(image_path: Path) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def generate_ground_truth(screenshot_path: Path, output_path: Path = None) -> dict:
+def load_sifr(sifr_path: Path) -> str:
+    """Load SiFR file content."""
+    with open(sifr_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def generate_ground_truth(
+    screenshot_path: Path, 
+    sifr_path: Path,
+    output_path: Path = None
+) -> dict:
     """
-    Generate ground truth from screenshot using GPT-4o Vision.
+    Generate agent ground truth from screenshot + SiFR.
     
     Args:
         screenshot_path: Path to screenshot PNG
+        sifr_path: Path to SiFR file
         output_path: Optional path to save ground truth JSON
         
     Returns:
-        Ground truth dict
+        Ground truth dict with agent tasks
     """
     import os
     from openai import OpenAI
@@ -72,8 +103,12 @@ def generate_ground_truth(screenshot_path: Path, output_path: Path = None) -> di
     
     client = OpenAI(api_key=api_key)
     
-    # Encode image
+    # Load inputs
     base64_image = encode_image(screenshot_path)
+    sifr_content = load_sifr(sifr_path)
+    
+    # Build prompt with SiFR
+    prompt = AGENT_GROUND_TRUTH_PROMPT.format(sifr_content=sifr_content)
     
     try:
         response = client.chat.completions.create(
@@ -82,7 +117,7 @@ def generate_ground_truth(screenshot_path: Path, output_path: Path = None) -> di
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": GROUND_TRUTH_PROMPT},
+                        {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -93,7 +128,7 @@ def generate_ground_truth(screenshot_path: Path, output_path: Path = None) -> di
                     ]
                 }
             ],
-            max_tokens=1000,
+            max_tokens=2000,
             temperature=0
         )
         
@@ -108,9 +143,11 @@ def generate_ground_truth(screenshot_path: Path, output_path: Path = None) -> di
         
         ground_truth = json.loads(content.strip())
         ground_truth["_meta"] = {
-            "source": str(screenshot_path),
+            "screenshot": str(screenshot_path),
+            "sifr": str(sifr_path),
             "model": "gpt-4o",
-            "tokens": response.usage.total_tokens
+            "tokens": response.usage.total_tokens,
+            "mode": "agent"
         }
         
         # Save if output path provided
@@ -127,22 +164,38 @@ def generate_ground_truth(screenshot_path: Path, output_path: Path = None) -> di
 
 def generate_ground_truth_for_page(page_name: str, base_dir: Path = None) -> dict:
     """
-    Generate ground truth for a captured page.
+    Generate agent ground truth for a captured page.
     
     Args:
-        page_name: Name of the page (e.g., "google")
+        page_name: Name of the page (e.g., "news_ycombinator_com")
         base_dir: Base directory with datasets/formats structure
         
     Returns:
-        Ground truth dict
+        Ground truth dict with agent tasks
     """
     if base_dir is None:
         base_dir = Path(".")
     
     screenshot_path = base_dir / "datasets" / "formats" / "screenshots" / f"{page_name}.png"
+    sifr_path = base_dir / "datasets" / "formats" / "sifr" / f"{page_name}.sifr"
     output_path = base_dir / "benchmark" / "ground-truth" / f"{page_name}.json"
     
     if not screenshot_path.exists():
         return {"error": f"Screenshot not found: {screenshot_path}"}
     
-    return generate_ground_truth(screenshot_path, output_path)
+    if not sifr_path.exists():
+        return {"error": f"SiFR not found: {sifr_path}"}
+    
+    return generate_ground_truth(screenshot_path, sifr_path, output_path)
+
+
+# CLI support
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1:
+        page_name = sys.argv[1]
+        base_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".")
+        result = generate_ground_truth_for_page(page_name, base_dir)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print("Usage: python ground_truth.py <page_name> [base_dir]")
