@@ -23,18 +23,13 @@ class CaptureResult:
 async def capture_with_e2llm(
     page,
     selector: str = "body",
-    timeout: int = 10000
+    timeout: int = 30000
 ) -> dict:
     """
     Capture page using E2LLM extension CustomEvent API.
     
-    Args:
-        page: Playwright page object
-        selector: CSS selector to capture (default: full page)
-        timeout: Timeout in ms
-        
     Returns:
-        dict with sifr, html, axtree, metadata
+        dict with sifr (stringified), html, axtree, metadata
     """
     
     result = await page.evaluate("""
@@ -47,17 +42,34 @@ async def capture_with_e2llm(
                 }, timeout);
                 
                 document.addEventListener('e2llm-capture-response', (e) => {
-                    if (e.detail.requestId === id) {
+                    if (e.detail && e.detail.requestId === id) {
                         clearTimeout(timer);
-                        resolve(e.detail);
+                        
+                        // E2LLM v2.6.x returns: {requestId, success, data, meta}
+                        // data contains the SiFR structure directly
+                        const response = e.detail;
+                        
+                        if (response.success && response.data) {
+                            resolve({
+                                sifr: JSON.stringify(response.data, null, 2),
+                                meta: response.meta || {},
+                                html: document.documentElement.outerHTML
+                            });
+                        } else {
+                            resolve({
+                                sifr: '',
+                                meta: {},
+                                html: document.documentElement.outerHTML,
+                                error: response.error || 'Unknown error'
+                            });
+                        }
                     }
                 }, { once: true });
                 
                 document.dispatchEvent(new CustomEvent('e2llm-capture-request', {
                     detail: { 
                         requestId: id, 
-                        selector: selector, 
-                        options: { fullPage: true }
+                        selector: selector
                     }
                 }));
             });
@@ -76,16 +88,6 @@ async def capture_page(
 ) -> CaptureResult:
     """
     Capture a page using Playwright + E2LLM extension.
-    
-    Args:
-        url: URL to capture
-        extension_path: Path to unpacked E2LLM extension
-        user_data_dir: Chrome profile directory
-        headless: Run headless (note: extensions need headless=False or --headless=new)
-        selector: CSS selector to capture
-        
-    Returns:
-        CaptureResult with all formats
     """
     from playwright.async_api import async_playwright
     
@@ -103,19 +105,16 @@ async def capture_page(
         
         try:
             await page.goto(url, wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(1000)  # Extra wait for extension
+            await page.wait_for_timeout(2000)  # Wait for extension to be ready
             
-            # Capture via E2LLM API
             result = await capture_with_e2llm(page, selector)
-            
-            # Screenshot
             screenshot = await page.screenshot(full_page=True)
             
             return CaptureResult(
                 url=url,
                 sifr=result.get("sifr", ""),
                 html=result.get("html", ""),
-                axtree=result.get("axtree", {}),
+                axtree=result.get("meta", {}),
                 screenshot=screenshot
             )
             
@@ -131,15 +130,6 @@ async def capture_multiple(
 ) -> list[CaptureResult]:
     """
     Capture multiple pages, saving to output directory.
-    
-    Args:
-        urls: List of URLs to capture
-        extension_path: Path to E2LLM extension
-        output_dir: Directory to save captured formats
-        user_data_dir: Chrome profile directory
-        
-    Returns:
-        List of CaptureResults
     """
     from playwright.async_api import async_playwright
     
@@ -168,7 +158,7 @@ async def capture_multiple(
                 print(f"Capturing: {url}")
                 
                 await page.goto(url, wait_until="networkidle", timeout=30000)
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(2000)  # Wait for extension
                 
                 result = await capture_with_e2llm(page)
                 screenshot = await page.screenshot(full_page=True)
@@ -177,42 +167,48 @@ async def capture_multiple(
                 page_id = url.replace("https://", "").replace("http://", "")
                 page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
                 
+                sifr_content = result.get("sifr", "")
+                html_content = result.get("html", "")
+                meta_content = result.get("meta", {})
+                
                 # Save files
                 (output / "sifr" / f"{page_id}.sifr").write_text(
-                    result.get("sifr", ""), encoding="utf-8"
+                    sifr_content, encoding="utf-8"
                 )
                 (output / "html" / f"{page_id}.html").write_text(
-                    result.get("html", ""), encoding="utf-8"
+                    html_content, encoding="utf-8"
                 )
                 (output / "axtree" / f"{page_id}.json").write_text(
-                    json.dumps(result.get("axtree", {}), indent=2, ensure_ascii=False),
+                    json.dumps(meta_content, indent=2, ensure_ascii=False),
                     encoding="utf-8"
                 )
                 (output / "screenshots" / f"{page_id}.png").write_bytes(screenshot)
                 
                 results.append(CaptureResult(
                     url=url,
-                    sifr=result.get("sifr", ""),
-                    html=result.get("html", ""),
-                    axtree=result.get("axtree", {}),
+                    sifr=sifr_content,
+                    html=html_content,
+                    axtree=meta_content,
                     screenshot=screenshot
                 ))
                 
-                print(f"  ✅ Saved: {page_id}")
+                sifr_size = len(sifr_content)
+                print(f"  ✅ Saved: {page_id} (SiFR: {sifr_size} bytes)")
                 
-                # Rate limiting
                 await page.wait_for_timeout(500)
                 
             except Exception as e:
                 print(f"  ❌ Error: {e}")
+                # Save empty files to avoid breaking pipeline
+                (output / "sifr" / f"{page_id}.sifr").write_text("", encoding="utf-8")
+                (output / "html" / f"{page_id}.html").write_text("", encoding="utf-8")
                 
         await context.close()
     
     return results
 
 
-# CLI entry point
-def main():
+if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Capture pages using E2LLM extension")
@@ -229,7 +225,3 @@ def main():
         output_dir=args.output,
         user_data_dir=args.profile
     ))
-
-
-if __name__ == "__main__":
-    main()
