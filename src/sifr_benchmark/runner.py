@@ -1,5 +1,5 @@
 """
-Benchmark runner - executes tests across models and formats.
+Benchmark runner - executes agent tasks across models and formats.
 """
 
 import json
@@ -29,22 +29,41 @@ class TestResult:
     error: Optional[str] = None
 
 
+# Agent-focused prompt template
+AGENT_PROMPT = """You are a web automation agent. You need to identify which UI element to interact with.
+
+The webpage is described below in {format_name} format:
+
+{context}
+
+TASK: {question}
+
+Rules:
+- Return ONLY the element ID (like btn001, lnk007, inp001)
+- If multiple elements match, return the most relevant one
+- If no element matches, respond with "none"
+
+Respond in this exact format:
+ANSWER: [element ID]
+CONFIDENCE: [0-100]"""
+
+
 class BenchmarkRunner:
-    """Main benchmark runner."""
+    """Main benchmark runner for agent tasks."""
 
     def __init__(
         self,
         models: list[str],
         formats: list[str],
         pages: Optional[list[str]] = None,
-        runs: int = 3,
-        tasks_path: Optional[str] = None,
+        runs: int = 1,
+        base_dir: Optional[Path] = None,
     ):
         self.models = models
         self.formats = formats
         self.pages = pages
         self.runs = runs
-        self.tasks_path = tasks_path or "benchmark/tasks.json"
+        self.base_dir = Path(base_dir) if base_dir else Path(".")
 
         self._validate_config()
 
@@ -54,64 +73,57 @@ class BenchmarkRunner:
             if model not in SUPPORTED_MODELS:
                 raise ValueError(f"Unknown model: {model}. Supported: {list(SUPPORTED_MODELS.keys())}")
 
-    def _load_tasks(self) -> list[dict]:
-        """Load task definitions."""
-        path = Path(self.tasks_path)
-        if not path.exists():
-            return [
-                {"id": "nav_01", "question": "Where is the main navigation?", "scoring": "text_match"},
-                {"id": "ext_01", "question": "What is the page title?", "scoring": "text_match"},
-                {"id": "int_01", "question": "List all buttons.", "scoring": "precision_recall"},
-            ]
-
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("tasks", [])
-
     def _load_ground_truth(self, page_id: str) -> dict:
         """Load ground truth for a page."""
-        # Try multiple filename patterns
         patterns = [
-            f"benchmark/ground-truth/{page_id}.json",
-            f"benchmark/ground-truth/{page_id.replace('.', '_')}.json",
-            f"benchmark/ground-truth/{page_id.replace('.', '_').replace('-', '_')}.json",
-            f"c:/benchmark/ground-truth/{page_id}.json",
-            f"c:/benchmark/ground-truth/{page_id.replace('.', '_')}.json",
+            self.base_dir / "benchmark" / "ground-truth" / f"{page_id}.json",
+            Path(f"benchmark/ground-truth/{page_id}.json"),
+            Path(f"c:/benchmark/benchmark/ground-truth/{page_id}.json"),
         ]
         
-        for pattern in patterns:
-            path = Path(pattern)
+        for path in patterns:
             if path.exists():
                 with open(path, encoding="utf-8") as f:
                     return json.load(f)
         
         return {}
 
-    def _get_expected(self, task_id: str, ground_truth: dict) -> str:
-        """Extract expected answer from ground truth based on task_id."""
+    def _get_tasks_from_ground_truth(self, ground_truth: dict) -> list[dict]:
+        """Extract tasks from ground truth."""
+        # New agent format: tasks array
+        if "tasks" in ground_truth and isinstance(ground_truth["tasks"], list):
+            return ground_truth["tasks"]
         
-        # If old format with "tasks" key
-        if "tasks" in ground_truth:
-            return ground_truth.get("tasks", {}).get(task_id, {}).get("answer", "")
+        # Legacy format: convert to tasks
+        legacy_tasks = []
         
-        # New format - map task_id to fields
-        mapping = {
-            "ext_01": ground_truth.get("title", ""),
-            "nav_01": ", ".join(ground_truth.get("navigation", {}).get("items", [])) if isinstance(ground_truth.get("navigation"), dict) else "",
-            "int_01": ", ".join(ground_truth.get("buttons_list", [])) if isinstance(ground_truth.get("buttons_list"), list) else "",
-        }
+        if ground_truth.get("title"):
+            legacy_tasks.append({
+                "id": "ext_01",
+                "type": "action_locate",
+                "question": "What element ID contains the page title?",
+                "answer": ground_truth.get("title", "")
+            })
         
-        return mapping.get(task_id, "")
+        if ground_truth.get("primary_button", {}).get("text"):
+            legacy_tasks.append({
+                "id": "act_01",
+                "type": "action_click",
+                "question": f"What element ID should I click to {ground_truth['primary_button']['text']}?",
+                "answer": ""  # Unknown in legacy format
+            })
+        
+        return legacy_tasks
 
     def _discover_pages(self) -> list[str]:
         """Discover available test pages."""
         if self.pages:
             return self.pages
 
-        # Look for ground truth files in multiple locations
         gt_paths = [
+            self.base_dir / "benchmark" / "ground-truth",
             Path("benchmark/ground-truth"),
-            Path("c:/benchmark/ground-truth"),
+            Path("c:/benchmark/benchmark/ground-truth"),
         ]
         
         for gt_path in gt_paths:
@@ -120,47 +132,38 @@ class BenchmarkRunner:
                 if pages:
                     return pages
 
-        # Look for SiFR examples
-        examples_path = Path("examples")
-        if examples_path.exists():
-            pages = [f.stem for f in examples_path.glob("*.sifr")]
-            if pages:
-                return pages
-
-        return ["product_page"]
+        return []
 
     def _build_prompt(self, task: dict, context: str, format_name: str) -> str:
-        """Build prompt for a task."""
-        return f"""You are analyzing a webpage represented in {format_name} format.
-
-CONTEXT:
-{context}
-
-QUESTION: {task['question']}
-
-Respond in this exact format:
-ANSWER: [your answer]
-CONFIDENCE: [0-100]
-EVIDENCE: [element IDs or text supporting your answer]"""
+        """Build prompt for agent task."""
+        return AGENT_PROMPT.format(
+            format_name=format_name,
+            context=context,
+            question=task["question"]
+        )
 
     def _parse_response(self, raw: str) -> dict:
         """Parse model response."""
-        result = {"answer": "", "confidence": 50, "evidence": ""}
+        result = {"answer": "", "confidence": 50}
 
         for line in raw.split("\n"):
             line = line.strip()
-            if line.startswith("ANSWER:"):
-                result["answer"] = line.replace("ANSWER:", "").strip()
-            elif line.startswith("CONFIDENCE:"):
+            if line.upper().startswith("ANSWER:"):
+                result["answer"] = line.split(":", 1)[1].strip()
+            elif line.upper().startswith("CONFIDENCE:"):
                 try:
-                    result["confidence"] = int(line.replace("CONFIDENCE:", "").strip())
+                    result["confidence"] = int(line.split(":", 1)[1].strip())
                 except ValueError:
                     pass
-            elif line.startswith("EVIDENCE:"):
-                result["evidence"] = line.replace("EVIDENCE:", "").strip()
 
-        if not result["answer"] and raw:
-            result["answer"] = raw.strip()[:500]
+        # Fallback: try to extract element ID from raw response
+        if not result["answer"]:
+            import re
+            ids = re.findall(r'\b([a-z]{2,4}\d{2,4})\b', raw.lower())
+            if ids:
+                result["answer"] = ids[0]
+            else:
+                result["answer"] = raw.strip()[:100]
 
         return result
 
@@ -170,14 +173,13 @@ EVIDENCE: [element IDs or text supporting your answer]"""
         format_name: str,
         page_id: str,
         task: dict,
-        ground_truth: dict,
         run_num: int,
     ) -> TestResult:
         """Run a single test."""
 
         try:
             context = load_format(page_id, format_name)
-        except FileNotFoundError:
+        except FileNotFoundError as e:
             return TestResult(
                 model=model,
                 format=format_name,
@@ -185,7 +187,7 @@ EVIDENCE: [element IDs or text supporting your answer]"""
                 task_id=task["id"],
                 run=run_num,
                 response="",
-                expected="",
+                expected=task.get("answer", ""),
                 score=0.0,
                 confidence=0,
                 tokens=0,
@@ -207,7 +209,7 @@ EVIDENCE: [element IDs or text supporting your answer]"""
                 task_id=task["id"],
                 run=run_num,
                 response="",
-                expected="",
+                expected=task.get("answer", ""),
                 score=0.0,
                 confidence=0,
                 tokens=response_data.get("tokens", 0),
@@ -216,14 +218,12 @@ EVIDENCE: [element IDs or text supporting your answer]"""
             )
 
         parsed = self._parse_response(response_data["response"])
-
-        # Get expected using new mapping function
-        expected = self._get_expected(task["id"], ground_truth)
+        expected = task.get("answer", "")
         
         score = score_response(
             parsed["answer"],
             expected,
-            task.get("scoring", "text_match"),
+            task.get("type", "action")
         )
 
         return TestResult(
@@ -242,12 +242,20 @@ EVIDENCE: [element IDs or text supporting your answer]"""
 
     def run(self) -> list[dict]:
         """Run full benchmark."""
-        tasks = self._load_tasks()
         pages = self._discover_pages()
         results = []
 
+        if not pages:
+            print("No pages found for benchmark")
+            return results
+
         for page_id in pages:
             ground_truth = self._load_ground_truth(page_id)
+            tasks = self._get_tasks_from_ground_truth(ground_truth)
+            
+            if not tasks:
+                print(f"  ⚠️ No tasks for {page_id}")
+                continue
 
             for model in self.models:
                 for format_name in self.formats:
@@ -258,26 +266,26 @@ EVIDENCE: [element IDs or text supporting your answer]"""
                                 format_name=format_name,
                                 page_id=page_id,
                                 task=task,
-                                ground_truth=ground_truth,
                                 run_num=run_num,
                             )
                             results.append(result.__dict__)
-                            time.sleep(0.2)
+                            
+                            # Rate limiting
+                            time.sleep(0.3)
 
         return results
 
     def aggregate(self, results: list[dict]) -> list[dict]:
-        """Aggregate results by model and format."""
+        """Aggregate results by format (across models)."""
         agg = {}
 
         for r in results:
             if r.get("error"):
                 continue
 
-            key = f"{r['model']}|{r['format']}"
+            key = r["format"]
             if key not in agg:
                 agg[key] = {
-                    "model": r["model"],
                     "format": r["format"],
                     "scores": [],
                     "tokens": [],
@@ -295,7 +303,6 @@ EVIDENCE: [element IDs or text supporting your answer]"""
             latencies = data["latencies"]
 
             summary.append({
-                "model": data["model"],
                 "format": data["format"],
                 "accuracy": f"{(sum(scores) / len(scores) * 100):.1f}%" if scores else "N/A",
                 "avg_tokens": int(sum(tokens) / len(tokens)) if tokens else 0,
