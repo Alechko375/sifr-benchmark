@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sifr-benchmark"
-version = "0.1.11"
+version = "0.1.12"
 description = "Benchmark for evaluating LLM understanding of web UI: SiFR vs HTML vs AXTree vs Screenshots"
 readme = "README.md"
 license = "MIT"
