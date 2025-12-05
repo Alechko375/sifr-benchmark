@@ -78,6 +78,41 @@ def load_sifr(sifr_path: Path) -> str:
         return f.read()
 
 
+def extract_json(text: str) -> str:
+    """
+    Extract JSON object from text - handles various GPT response formats.
+    """
+    # Try markdown code blocks first
+    if "```json" in text:
+        try:
+            return text.split("```json")[1].split("```")[0].strip()
+        except IndexError:
+            pass
+    
+    if "```" in text:
+        try:
+            return text.split("```")[1].split("```")[0].strip()
+        except IndexError:
+            pass
+    
+    # Find JSON object by matching braces
+    start = text.find("{")
+    if start == -1:
+        return None
+    
+    # Find matching closing brace
+    depth = 0
+    for i, char in enumerate(text[start:], start):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i+1]
+    
+    return None
+
+
 def generate_ground_truth(
     screenshot_path: Path, 
     sifr_path: Path,
@@ -107,6 +142,10 @@ def generate_ground_truth(
     base64_image = encode_image(screenshot_path)
     sifr_content = load_sifr(sifr_path)
     
+    # Check if SiFR is empty
+    if not sifr_content or len(sifr_content.strip()) < 10:
+        return {"error": f"SiFR file is empty or too small: {sifr_path}"}
+    
     # Build prompt with SiFR
     prompt = AGENT_GROUND_TRUTH_PROMPT.format(sifr_content=sifr_content)
     
@@ -135,13 +174,12 @@ def generate_ground_truth(
         # Parse response
         content = response.choices[0].message.content
         
-        # Extract JSON from response
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0]
+        # Extract JSON from response - robust parsing
+        json_str = extract_json(content)
+        if not json_str:
+            return {"error": f"Could not extract JSON from response: {content[:100]}..."}
         
-        ground_truth = json.loads(content.strip())
+        ground_truth = json.loads(json_str)
         ground_truth["_meta"] = {
             "screenshot": str(screenshot_path),
             "sifr": str(sifr_path),
