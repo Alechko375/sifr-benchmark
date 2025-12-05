@@ -109,12 +109,13 @@ async def capture_page(
             
             result = await capture_with_e2llm(page, selector)
             screenshot = await page.screenshot(full_page=True)
+            axtree = await page.accessibility.snapshot()
             
             return CaptureResult(
                 url=url,
                 sifr=result.get("sifr", ""),
                 html=result.get("html", ""),
-                axtree=result.get("meta", {}),
+                axtree=axtree or {},
                 screenshot=screenshot
             )
             
@@ -163,13 +164,15 @@ async def capture_multiple(
                 result = await capture_with_e2llm(page)
                 screenshot = await page.screenshot(full_page=True)
                 
+                # Get real accessibility tree via Playwright
+                axtree = await page.accessibility.snapshot()
+                
                 # Generate page_id from URL
                 page_id = url.replace("https://", "").replace("http://", "")
                 page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
                 
                 sifr_content = result.get("sifr", "")
                 html_content = result.get("html", "")
-                meta_content = result.get("meta", {})
                 
                 # Save files
                 (output / "sifr" / f"{page_id}.sifr").write_text(
@@ -179,7 +182,7 @@ async def capture_multiple(
                     html_content, encoding="utf-8"
                 )
                 (output / "axtree" / f"{page_id}.json").write_text(
-                    json.dumps(meta_content, indent=2, ensure_ascii=False),
+                    json.dumps(axtree, indent=2, ensure_ascii=False),
                     encoding="utf-8"
                 )
                 (output / "screenshots" / f"{page_id}.png").write_bytes(screenshot)
@@ -188,7 +191,7 @@ async def capture_multiple(
                     url=url,
                     sifr=sifr_content,
                     html=html_content,
-                    axtree=meta_content,
+                    axtree=axtree or {},
                     screenshot=screenshot
                 ))
                 
