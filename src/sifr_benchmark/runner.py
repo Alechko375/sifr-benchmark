@@ -76,9 +76,8 @@ class BenchmarkRunner:
     def _load_ground_truth(self, page_id: str) -> dict:
         """Load ground truth for a page."""
         patterns = [
-            self.base_dir / "benchmark" / "ground-truth" / f"{page_id}.json",
-            Path(f"benchmark/ground-truth/{page_id}.json"),
-            Path(f"c:/benchmark/benchmark/ground-truth/{page_id}.json"),
+            self.base_dir / "ground-truth" / f"{page_id}.json",  # New structure
+            self.base_dir / "benchmark" / "ground-truth" / f"{page_id}.json",  # Legacy
         ]
         
         for path in patterns:
@@ -120,17 +119,19 @@ class BenchmarkRunner:
         if self.pages:
             return self.pages
 
-        gt_paths = [
-            self.base_dir / "benchmark" / "ground-truth",
-            Path("benchmark/ground-truth"),
-            Path("c:/benchmark/benchmark/ground-truth"),
-        ]
+        # New structure: base_dir/ground-truth/
+        gt_path = self.base_dir / "ground-truth"
+        if gt_path.exists():
+            pages = [f.stem for f in gt_path.glob("*.json")]
+            if pages:
+                return pages
         
-        for gt_path in gt_paths:
-            if gt_path.exists():
-                pages = [f.stem for f in gt_path.glob("*.json") if f.stem != "template"]
-                if pages:
-                    return pages
+        # Fallback: look for SiFR files
+        sifr_path = self.base_dir / "captures" / "sifr"
+        if sifr_path.exists():
+            pages = [f.stem for f in sifr_path.glob("*.sifr")]
+            if pages:
+                return pages
 
         return []
 
@@ -178,7 +179,7 @@ class BenchmarkRunner:
         """Run a single test."""
 
         try:
-            context = load_format(page_id, format_name)
+            context = load_format(page_id, format_name, self.base_dir)
         except FileNotFoundError as e:
             return TestResult(
                 model=model,
