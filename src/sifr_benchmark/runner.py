@@ -220,11 +220,13 @@ class BenchmarkRunner:
 
         parsed = self._parse_response(response_data["response"])
         expected = task.get("answer", "")
+        element_text = task.get("element_text", "")  # For HTML/AXTree fallback
         
         score = score_response(
             parsed["answer"],
             expected,
-            task.get("type", "action")
+            task.get("type", "action"),
+            element_text
         )
 
         return TestResult(
