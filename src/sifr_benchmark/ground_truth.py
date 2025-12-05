@@ -147,7 +147,7 @@ def generate_ground_truth(
         return {"error": f"SiFR file is empty or too small: {sifr_path}"}
     
     # Truncate SiFR if too large (GPT-4o has ~128K token limit)
-    MAX_SIFR_CHARS = 50000  # ~12K tokens, safe limit
+    MAX_SIFR_CHARS = 100000  # ~12K tokens, safe limit
     if len(sifr_content) > MAX_SIFR_CHARS:
         # Try to truncate at a sensible point
         sifr_content = sifr_content[:MAX_SIFR_CHARS]
