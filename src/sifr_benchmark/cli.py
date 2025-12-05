@@ -407,3 +407,103 @@ def full_benchmark(url, name, models, delay):
 
 if __name__ == "__main__":
     main()
+@cli.command()
+@click.argument("urls", nargs=-1, required=True)
+@click.option("--extension", "-e", required=True, help="Path to E2LLM extension folder")
+@click.option("--output", "-o", default="./datasets/formats", help="Output directory")
+@click.option("--profile", default="./e2llm-chrome-profile", help="Chrome profile directory")
+def capture_e2llm(urls, extension, output, profile):
+    """Capture pages using E2LLM extension API."""
+    import asyncio
+    
+    try:
+        from .capture_e2llm import capture_multiple
+    except ImportError:
+        console.print("[red]Error: playwright not installed[/red]")
+        console.print("Run: pip install playwright && playwright install chromium")
+        return
+    
+    console.print(f"[bold]🚀 E2LLM Capture[/bold]")
+    console.print(f"Extension: {extension}")
+    console.print(f"URLs: {len(urls)}")
+    
+    results = asyncio.run(capture_multiple(
+        urls=list(urls),
+        extension_path=extension,
+        output_dir=output,
+        user_data_dir=profile
+    ))
+    
+    console.print(f"\n[green]✅ Captured {len(results)} pages[/green]")
+
+
+@cli.command()
+@click.argument("urls", nargs=-1, required=True)
+@click.option("--extension", "-e", required=True, help="Path to E2LLM extension folder")
+@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
+@click.option("--runs", "-r", default=1, help="Number of runs per test")
+def full_benchmark_e2llm(urls, extension, models, runs):
+    """Full benchmark using E2LLM extension for capture."""
+    import asyncio
+    
+    try:
+        from .capture_e2llm import capture_multiple
+    except ImportError:
+        console.print("[red]Error: playwright not installed[/red]")
+        console.print("Run: pip install playwright && playwright install chromium")
+        return
+    
+    console.print(f"[bold]🚀 Full Benchmark with E2LLM[/bold]")
+    console.print(f"URLs: {len(urls)}")
+    
+    # Step 1: Capture
+    console.print("\n[bold]Step 1/3: Capturing with E2LLM...[/bold]")
+    results = asyncio.run(capture_multiple(
+        urls=list(urls),
+        extension_path=extension,
+        output_dir="./datasets/formats"
+    ))
+    console.print(f"[green]✅ Captured {len(results)} pages[/green]")
+    
+    # Step 2: Generate ground truth
+    console.print("\n[bold]Step 2/3: Generating ground truth...[/bold]")
+    from .ground_truth import generate_ground_truth
+    for url in urls:
+        page_id = url.replace("https://", "").replace("http://", "")
+        page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
+        try:
+            generate_ground_truth(page_id)
+            console.print(f"  ✅ {page_id}")
+        except Exception as e:
+            console.print(f"  ⚠️ {page_id}: {e}")
+    
+    # Step 3: Run benchmark
+    console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
+    model_list = [m.strip() for m in models.split(",")]
+    
+    runner = BenchmarkRunner(
+        models=model_list,
+        formats=["sifr", "html_raw", "axtree"],
+        runs=int(runs)
+    )
+    
+    results = runner.run()
+    summary = runner.aggregate(results)
+    
+    # Display results
+    table = Table(title="Benchmark Results")
+    table.add_column("Format")
+    table.add_column("Accuracy")
+    table.add_column("Avg Tokens")
+    table.add_column("Avg Latency")
+    
+    for row in summary:
+        table.add_row(
+            row["format"],
+            row["accuracy"],
+            str(row["avg_tokens"]),
+            row["avg_latency"]
+        )
+    
+    console.print(table)
+    console.print("\n[green]✅ Benchmark complete![/green]")
