@@ -1,157 +1,114 @@
 """
-Response scoring functions.
+Response scoring for agent tasks.
+Focus: Element ID matching.
 """
 
 import re
-from difflib import SequenceMatcher
 
 
-def normalize_text(text: str) -> str:
-    """Normalize text for comparison."""
+def extract_element_ids(text: str) -> set:
+    """
+    Extract element IDs from text.
+    Matches patterns like: btn001, lnk007, inp001, txt042
+    """
     if not text:
-        return ""
-    # Lowercase, remove extra whitespace, strip punctuation
-    text = text.lower().strip()
-    text = re.sub(r'\s+', ' ', text)
-    text = re.sub(r'[^\w\s]', '', text)
-    return text
+        return set()
+    # Match word boundary + letters + digits
+    ids = re.findall(r'\b([a-z]{2,4}\d{2,4})\b', text.lower())
+    return set(ids)
 
 
-def fuzzy_match(a: str, b: str, threshold: float = 0.8) -> float:
+def score_agent_task(response: str, expected: str) -> float:
     """
-    Fuzzy string matching.
-    Returns 1.0 for exact match, 0.5 for partial, 0.0 for no match.
-    """
-    a_norm = normalize_text(a)
-    b_norm = normalize_text(b)
+    Score agent task response.
     
-    if not a_norm or not b_norm:
-        return 0.0
-    
-    # Exact match
-    if a_norm == b_norm:
-        return 1.0
-    
-    # One contains the other
-    if a_norm in b_norm or b_norm in a_norm:
-        return 0.5
-    
-    # Sequence similarity
-    ratio = SequenceMatcher(None, a_norm, b_norm).ratio()
-    if ratio >= threshold:
-        return 1.0
-    elif ratio >= threshold * 0.7:
-        return 0.5
-    
-    return 0.0
-
-
-def score_element_id(response: str, expected: str) -> float:
-    """Score element ID match."""
-    resp_norm = normalize_text(response)
-    exp_norm = normalize_text(expected)
-    
-    if not exp_norm:
-        return 0.0
-    
-    # Check if expected ID appears in response
-    if exp_norm in resp_norm:
-        return 1.0
-    
-    # Check individual IDs
-    expected_ids = set(re.findall(r'\b[a-z]+\d+\b', exp_norm))
-    response_ids = set(re.findall(r'\b[a-z]+\d+\b', resp_norm))
-    
-    if expected_ids and expected_ids.issubset(response_ids):
-        return 1.0
-    
-    if expected_ids & response_ids:
-        return 0.5
-    
-    return 0.0
-
-
-def score_numeric(response: str, expected: str) -> float:
-    """Score numeric match."""
-    # Extract numbers from both
-    resp_nums = re.findall(r'[\d.]+', response)
-    exp_nums = re.findall(r'[\d.]+', expected)
-    
-    if not exp_nums:
-        return 0.0
-    
-    try:
-        exp_val = float(exp_nums[0])
-        for num in resp_nums:
-            if float(num) == exp_val:
-                return 1.0
-    except ValueError:
-        pass
-    
-    return 0.0
-
-
-def score_precision_recall(response: str, expected: str) -> float:
-    """
-    Score as F1 of element sets.
-    Expected format: "elem1, elem2, elem3"
-    """
-    # Parse comma-separated lists
-    resp_items = set(normalize_text(item) for item in response.split(",") if item.strip())
-    exp_items = set(normalize_text(item) for item in expected.split(",") if item.strip())
-    
-    if not exp_items:
-        return 0.0
-    
-    if not resp_items:
-        return 0.0
-    
-    # Calculate precision and recall
-    intersection = resp_items & exp_items
-    precision = len(intersection) / len(resp_items) if resp_items else 0
-    recall = len(intersection) / len(exp_items) if exp_items else 0
-    
-    # F1 score
-    if precision + recall == 0:
-        return 0.0
-    
-    f1 = 2 * precision * recall / (precision + recall)
-    return f1
-
-
-def score_response(response: str, expected: str, scoring_type: str) -> float:
-    """
-    Score a response against expected answer.
+    Simple rules:
+    - Exact ID match → 1.0
+    - Expected ID found in response → 1.0
+    - Partial overlap (for multi-ID tasks) → proportional
+    - No match → 0.0
     
     Args:
-        response: Model's response
-        expected: Expected answer
-        scoring_type: One of: element_id, text_match, numeric, precision_recall, semantic
+        response: Model's response (may contain explanation + ID)
+        expected: Expected element ID (e.g., "btn001" or "btn001, btn002")
         
     Returns:
         Score from 0.0 to 1.0
     """
-    if not expected or expected.lower() in ("not_applicable", "not_visible", "n/a"):
-        # Skip tasks without ground truth
+    if not expected:
         return 0.0
     
-    if scoring_type == "element_id":
-        return score_element_id(response, expected)
+    # Extract IDs from both
+    expected_ids = extract_element_ids(expected)
+    response_ids = extract_element_ids(response)
     
-    elif scoring_type == "text_match":
-        return fuzzy_match(response, expected)
+    if not expected_ids:
+        # Expected wasn't an ID - fallback to text match
+        return 1.0 if expected.lower().strip() in response.lower() else 0.0
     
-    elif scoring_type == "numeric":
-        return score_numeric(response, expected)
+    if not response_ids:
+        # Model didn't return any IDs
+        return 0.0
     
-    elif scoring_type == "precision_recall":
-        return score_precision_recall(response, expected)
+    # Single expected ID - check if it's in response
+    if len(expected_ids) == 1:
+        expected_id = list(expected_ids)[0]
+        if expected_id in response_ids:
+            return 1.0
+        return 0.0
     
-    elif scoring_type == "semantic":
-        # For semantic scoring, use fuzzy match as fallback
-        # Could integrate LLM-as-judge here
-        return fuzzy_match(response, expected, threshold=0.6)
+    # Multiple expected IDs - calculate overlap
+    intersection = expected_ids & response_ids
+    if not intersection:
+        return 0.0
     
-    else:
-        # Default to fuzzy text match
-        return fuzzy_match(response, expected)
+    # F1-style score for multi-ID tasks
+    precision = len(intersection) / len(response_ids)
+    recall = len(intersection) / len(expected_ids)
+    f1 = 2 * precision * recall / (precision + recall)
+    
+    return f1
+
+
+def score_response(response: str, expected: str, task_type: str = "action") -> float:
+    """
+    Main scoring function.
+    
+    Args:
+        response: Model's response
+        expected: Expected answer
+        task_type: Task type from ground truth
+        
+    Returns:
+        Score from 0.0 to 1.0
+    """
+    if not expected or expected.lower() in ("n/a", "none", "not_applicable"):
+        return 0.0
+    
+    # All agent tasks use ID matching
+    if task_type.startswith("action"):
+        return score_agent_task(response, expected)
+    
+    # Fallback for any other task type
+    return score_agent_task(response, expected)
+
+
+# Quick test
+if __name__ == "__main__":
+    tests = [
+        # (response, expected, expected_score)
+        ("btn001", "btn001", 1.0),
+        ("Click on btn001 to login", "btn001", 1.0),
+        ("The login button is btn001", "btn001", 1.0),
+        ("I would click btn002", "btn001", 0.0),
+        ("btn001, btn002, btn003", "btn001, btn002", 0.8),  # partial
+        ("Click the login button", "btn001", 0.0),  # no ID in response
+        ("lnk007", "lnk007", 1.0),
+        ("Use inp001 for search", "inp001", 1.0),
+    ]
+    
+    print("Scoring tests:")
+    for resp, exp, expected_score in tests:
+        score = score_agent_task(resp, exp)
+        status = "✅" if abs(score - expected_score) < 0.1 else "❌"
+        print(f"{status} '{resp}' vs '{exp}' → {score:.1f} (expected {expected_score})")
