@@ -18,10 +18,8 @@ from .formats import validate_sifr_file, DEFAULT_MAX_CHARS
 
 console = Console()
 
-# Default budget in KB (matches formats.py)
 DEFAULT_TARGET_SIZE_KB = DEFAULT_MAX_CHARS // 1024
 
-# Status icons for output
 STATUS_ICONS = {
     "success": "✅",
     "warning": "⚠️",
@@ -155,6 +153,230 @@ def create_run_dir(base_path: str = "./benchmark_runs") -> Path:
     return run_dir
 
 
+@click.group()
+@click.version_option(version=__version__)
+def main():
+    """SiFR Benchmark - Evaluate LLM understanding of web UI."""
+    pass
+
+
+@main.command()
+@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
+@click.option("--formats", "-f", default=",".join(ALL_FORMATS), help="Formats to test")
+@click.option("--run-dir", "-d", required=True, type=click.Path(exists=True), help="Run directory")
+@click.option("--runs", "-r", default=1, type=int, help="Runs per test")
+@click.option("--target-size", "-s", default=DEFAULT_TARGET_SIZE_KB, type=int, help="Budget in KB")
+def run(models, formats, run_dir, runs, target_size):
+    """Run benchmark on existing captures."""
+    console.print(f"\n[bold blue]🚀 SiFR Benchmark v{__version__}[/bold blue]\n")
+    run_path = Path(run_dir)
+    model_list = [m.strip() for m in models.split(",")]
+    format_list = [f.strip() for f in formats.split(",")]
+    target_size_bytes = target_size * 1024
+    
+    if any("gpt" in m for m in model_list) and not os.getenv("OPENAI_API_KEY"):
+        console.print("[red]❌ OPENAI_API_KEY not set[/red]")
+        return
+    if any("claude" in m for m in model_list) and not os.getenv("ANTHROPIC_API_KEY"):
+        console.print("[red]❌ ANTHROPIC_API_KEY not set[/red]")
+        return
+    
+    runner = BenchmarkRunner(
+        models=model_list,
+        formats=format_list,
+        runs=runs,
+        base_dir=run_path,
+        max_chars=target_size_bytes
+    )
+    
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+        task = progress.add_task("Running benchmark...", total=None)
+        results = runner.run()
+        progress.update(task, completed=True)
+    
+    summary = runner.aggregate(results)
+    meta_path = run_path / "run_meta.json"
+    site_name = run_path.name
+    if meta_path.exists():
+        with open(meta_path) as f:
+            meta = json.load(f)
+            if meta.get("urls"):
+                site_name = meta["urls"][0].replace("https://", "").replace("http://", "").split("/")[0]
+    
+    render_benchmark_results(site_name, summary, model_list[0])
+    
+    with open(run_path / "results" / "raw_results.json", "w") as f:
+        json.dump(results, f, indent=2, default=str)
+    
+    summary_data = [
+        {
+            "format": r.format_name,
+            "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
+            "avg_tokens": r.tokens or 0,
+            "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
+            "status": r.status,
+            "failure_reason": r.failure_reason.value if r.failure_reason else None,
+        }
+        for r in summary
+    ]
+    with open(run_path / "results" / "summary.json", "w") as f:
+        json.dump(summary_data, f, indent=2)
+    console.print(f"\n[green]✅ Results saved to {run_path}/results/[/green]")
+
+
+@main.command()
+@click.argument("urls", nargs=-1, required=True)
+@click.option("--extension", "-e", required=True, help="Path to E2LLM extension")
+@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
+@click.option("--runs", "-r", default=1, type=int, help="Runs per test")
+@click.option("--base-dir", "-b", default="./benchmark_runs", help="Base directory for runs")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
+@click.option("--target-size", "-s", default=DEFAULT_TARGET_SIZE_KB, type=int, help="Budget in KB for ALL formats")
+def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, target_size):
+    """Full benchmark: capture → ground truth → test (isolated run)."""
+    import asyncio
+    try:
+        from .capture_e2llm import capture_multiple
+    except ImportError:
+        console.print("[red]Error: playwright not installed[/red]")
+        return
+    
+    run_dir = create_run_dir(base_dir)
+    model_list = [m.strip() for m in models.split(",")]
+    target_size_bytes = target_size * 1024
+    
+    console.print(f"[bold blue]🚀 Full Benchmark with E2LLM[/bold blue]")
+    console.print(f"Run directory: [cyan]{run_dir}[/cyan]")
+    console.print(f"URLs: {len(urls)}")
+    console.print(f"Formats: {', '.join(ALL_FORMATS)}")
+    console.print(f"Budget (all formats): [yellow]{target_size}KB[/yellow]")
+    
+    # Step 1: Capture
+    console.print("\n[bold]Step 1/3: Capturing with E2LLM...[/bold]")
+    captures_dir = run_dir / "captures"
+    results = asyncio.run(capture_multiple(
+        urls=list(urls),
+        extension_path=extension,
+        output_dir=str(captures_dir),
+        target_size=target_size_bytes
+    ))
+    
+    captured_pages = []
+    for url in urls:
+        page_id = url.replace("https://", "").replace("http://", "")
+        page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
+        captured_pages.append(page_id)
+    console.print(f"[green]✅ Captured {len(results)} pages[/green]")
+    
+    # Step 2: Ground truth
+    console.print("\n[bold]Step 2/3: Generating ground truth...[/bold]")
+    from .ground_truth import generate_ground_truth
+    for page_id in captured_pages:
+        screenshot_path = captures_dir / "screenshots" / f"{page_id}.png"
+        sifr_path = captures_dir / "sifr" / f"{page_id}.sifr"
+        gt_output = run_dir / "ground-truth" / f"{page_id}.json"
+        if not screenshot_path.exists():
+            console.print(f"  ⚠️ {page_id}: screenshot not found")
+            continue
+        if not sifr_path.exists():
+            console.print(f"  ⚠️ {page_id}: sifr not found")
+            continue
+        try:
+            result = generate_ground_truth(screenshot_path, sifr_path, gt_output)
+            if "error" in result:
+                console.print(f"  ⚠️ {page_id}: {result['error']}")
+            else:
+                console.print(f"  ✅ {page_id}")
+                render_ground_truth_summary(gt_output, verbose)
+        except Exception as e:
+            console.print(f"  ⚠️ {page_id}: {e}")
+    
+    # Step 3: Benchmark
+    console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
+    runner = BenchmarkRunner(
+        models=model_list,
+        formats=ALL_FORMATS,
+        runs=runs,
+        base_dir=run_dir,
+        max_chars=target_size_bytes
+    )
+    bench_results = runner.run()
+    
+    by_page = aggregate_by_page(bench_results, runner)
+    all_summaries = []
+    for page_id, summary in by_page.items():
+        site_name = page_id.replace("_", ".")
+        page_results = [r for r in bench_results if r.get("page_id") == page_id]
+        console.print(f"\n[bold]{site_name}[/bold]")
+        for fmt in ALL_FORMATS:
+            render_errors(page_results, fmt, verbose)
+        render_benchmark_results(site_name, summary, model_list[0])
+        console.print()
+        all_summaries.extend(summary)
+    
+    if len(by_page) > 1:
+        combined = runner.aggregate(bench_results)
+        render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
+    
+    with open(run_dir / "results" / "raw_results.json", "w") as f:
+        json.dump(bench_results, f, indent=2, default=str)
+    
+    summary_by_page = {}
+    for page_id, summary in by_page.items():
+        summary_by_page[page_id] = [
+            {
+                "format": r.format_name,
+                "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
+                "avg_tokens": r.tokens or 0,
+                "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
+                "status": r.status,
+                "failure_reason": r.failure_reason.value if r.failure_reason else None,
+            }
+            for r in summary
+        ]
+    with open(run_dir / "results" / "summary.json", "w") as f:
+        json.dump(summary_by_page, f, indent=2)
+    
+    metadata = {
+        "timestamp": datetime.now().isoformat(),
+        "urls": list(urls),
+        "models": model_list,
+        "formats": ALL_FORMATS,
+        "pages": captured_pages,
+        "target_size_kb": target_size,
+        "version": __version__,
+    }
+    with open(run_dir / "run_meta.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+    
+    console.print(f"\n[green]✅ Benchmark complete![/green]")
+    console.print(f"[cyan]Results: {run_dir}[/cyan]")
+
+
+@main.command()
+@click.argument("path", type=click.Path(exists=True))
+def validate(path):
+    """Validate SiFR files."""
+    path = Path(path)
+    files = list(path.glob("**/*.sifr")) if path.is_dir() else [path]
+    valid = invalid = 0
+    for f in files:
+        try:
+            errors = validate_sifr_file(f)
+            if errors:
+                console.print(f"[red]❌ {f.name}[/red]")
+                for err in errors:
+                    console.print(f"   {err}")
+                invalid += 1
+            else:
+                console.print(f"[green]✅ {f.name}[/green]")
+                valid += 1
+        except Exception as e:
+            console.print(f"[red]❌ {f.name}: {e}[/red]")
+            invalid += 1
+    console.print(f"\n[bold]Summary: {valid} valid, {invalid} invalid[/bold]")
+
+
 @main.command()
 @click.argument("run_dirs", nargs=-1, type=click.Path(exists=True))
 def compare(run_dirs):
@@ -253,230 +475,4 @@ def info():
 
 
 if __name__ == "__main__":
-    main()click.group()
-@click.version_option(version=__version__)
-def main():
-    """SiFR Benchmark - Evaluate LLM understanding of web UI."""
-    pass
-
-
-@main.command()
-@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
-@click.option("--formats", "-f", default=",".join(ALL_FORMATS), help="Formats to test")
-@click.option("--run-dir", "-d", required=True, type=click.Path(exists=True), help="Run directory")
-@click.option("--runs", "-r", default=1, type=int, help="Runs per test")
-@click.option("--target-size", "-s", default=DEFAULT_TARGET_SIZE_KB, type=int, help="Budget in KB for all formats")
-def run(models, formats, run_dir, runs, target_size):
-    """Run benchmark on existing captures."""
-    console.print(f"\n[bold blue]🚀 SiFR Benchmark v{__version__}[/bold blue]\n")
-    run_path = Path(run_dir)
-    model_list = [m.strip() for m in models.split(",")]
-    format_list = [f.strip() for f in formats.split(",")]
-    target_size_bytes = target_size * 1024
-    
-    if any("gpt" in m for m in model_list) and not os.getenv("OPENAI_API_KEY"):
-        console.print("[red]❌ OPENAI_API_KEY not set[/red]")
-        return
-    if any("claude" in m for m in model_list) and not os.getenv("ANTHROPIC_API_KEY"):
-        console.print("[red]❌ ANTHROPIC_API_KEY not set[/red]")
-        return
-    
-    runner = BenchmarkRunner(
-        models=model_list,
-        formats=format_list,
-        runs=runs,
-        base_dir=run_path,
-        max_chars=target_size_bytes
-    )
-    
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
-        task = progress.add_task("Running benchmark...", total=None)
-        results = runner.run()
-        progress.update(task, completed=True)
-    
-    summary = runner.aggregate(results)
-    meta_path = run_path / "run_meta.json"
-    site_name = run_path.name
-    if meta_path.exists():
-        with open(meta_path) as f:
-            meta = json.load(f)
-            if meta.get("urls"):
-                site_name = meta["urls"][0].replace("https://", "").replace("http://", "").split("/")[0]
-    
-    render_benchmark_results(site_name, summary, model_list[0])
-    
-    raw_results_path = run_path / "results" / "raw_results.json"
-    with open(raw_results_path, "w") as f:
-        json.dump(results, f, indent=2, default=str)
-    
-    summary_data = [
-        {
-            "format": r.format_name,
-            "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
-            "avg_tokens": r.tokens or 0,
-            "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
-            "status": r.status,
-            "failure_reason": r.failure_reason.value if r.failure_reason else None,
-        }
-        for r in summary
-    ]
-    with open(run_path / "results" / "summary.json", "w") as f:
-        json.dump(summary_data, f, indent=2)
-    console.print(f"\n[green]✅ Results saved to {run_path}/results/[/green]")
-
-
-@main.command()
-@click.argument("urls", nargs=-1, required=True)
-@click.option("--extension", "-e", required=True, help="Path to E2LLM extension")
-@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
-@click.option("--runs", "-r", default=1, type=int, help="Runs per test")
-@click.option("--base-dir", "-b", default="./benchmark_runs", help="Base directory for runs")
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
-@click.option("--target-size", "-s", default=DEFAULT_TARGET_SIZE_KB, type=int,
-              help=f"Budget in KB for ALL formats (default: {DEFAULT_TARGET_SIZE_KB})")
-def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, target_size):
-    """Full benchmark: capture → ground truth → test (isolated run)."""
-    import asyncio
-    try:
-        from .capture_e2llm import capture_multiple
-    except ImportError:
-        console.print("[red]Error: playwright not installed[/red]")
-        return
-    
-    run_dir = create_run_dir(base_dir)
-    model_list = [m.strip() for m in models.split(",")]
-    target_size_bytes = target_size * 1024
-    
-    console.print(f"[bold blue]🚀 Full Benchmark with E2LLM[/bold blue]")
-    console.print(f"Run directory: [cyan]{run_dir}[/cyan]")
-    console.print(f"URLs: {len(urls)}")
-    console.print(f"Formats: {', '.join(ALL_FORMATS)}")
-    console.print(f"Budget (all formats): [yellow]{target_size}KB[/yellow]")
-    
-    # Step 1: Capture
-    console.print("\n[bold]Step 1/3: Capturing with E2LLM...[/bold]")
-    captures_dir = run_dir / "captures"
-    results = asyncio.run(capture_multiple(
-        urls=list(urls),
-        extension_path=extension,
-        output_dir=str(captures_dir),
-        target_size=target_size_bytes
-    ))
-    
-    captured_pages = []
-    for url in urls:
-        page_id = url.replace("https://", "").replace("http://", "")
-        page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
-        captured_pages.append(page_id)
-    console.print(f"[green]✅ Captured {len(results)} pages[/green]")
-    
-    # Step 2: Ground truth
-    console.print("\n[bold]Step 2/3: Generating ground truth...[/bold]")
-    from .ground_truth import generate_ground_truth
-    for page_id in captured_pages:
-        screenshot_path = captures_dir / "screenshots" / f"{page_id}.png"
-        sifr_path = captures_dir / "sifr" / f"{page_id}.sifr"
-        gt_output = run_dir / "ground-truth" / f"{page_id}.json"
-        if not screenshot_path.exists():
-            console.print(f"  ⚠️ {page_id}: screenshot not found")
-            continue
-        if not sifr_path.exists():
-            console.print(f"  ⚠️ {page_id}: sifr not found")
-            continue
-        try:
-            result = generate_ground_truth(screenshot_path, sifr_path, gt_output)
-            if "error" in result:
-                console.print(f"  ⚠️ {page_id}: {result['error']}")
-            else:
-                console.print(f"  ✅ {page_id}")
-                render_ground_truth_summary(gt_output, verbose)
-        except Exception as e:
-            console.print(f"  ⚠️ {page_id}: {e}")
-    
-    # Step 3: Benchmark (ALL formats get same budget)
-    console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
-    runner = BenchmarkRunner(
-        models=model_list,
-        formats=ALL_FORMATS,
-        runs=runs,
-        base_dir=run_dir,
-        max_chars=target_size_bytes  # Same budget for ALL formats
-    )
-    bench_results = runner.run()
-    
-    by_page = aggregate_by_page(bench_results, runner)
-    all_summaries = []
-    for page_id, summary in by_page.items():
-        site_name = page_id.replace("_", ".")
-        page_results = [r for r in bench_results if r.get("page_id") == page_id]
-        console.print(f"\n[bold]{site_name}[/bold]")
-        for fmt in ALL_FORMATS:
-            render_errors(page_results, fmt, verbose)
-        render_benchmark_results(site_name, summary, model_list[0])
-        console.print()
-        all_summaries.extend(summary)
-    
-    if len(by_page) > 1:
-        combined = runner.aggregate(bench_results)
-        render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
-    
-    with open(run_dir / "results" / "raw_results.json", "w") as f:
-        json.dump(bench_results, f, indent=2, default=str)
-    
-    summary_by_page = {}
-    for page_id, summary in by_page.items():
-        summary_by_page[page_id] = [
-            {
-                "format": r.format_name,
-                "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
-                "avg_tokens": r.tokens or 0,
-                "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
-                "status": r.status,
-                "failure_reason": r.failure_reason.value if r.failure_reason else None,
-            }
-            for r in summary
-        ]
-    with open(run_dir / "results" / "summary.json", "w") as f:
-        json.dump(summary_by_page, f, indent=2)
-    
-    metadata = {
-        "timestamp": datetime.now().isoformat(),
-        "urls": list(urls),
-        "models": model_list,
-        "formats": ALL_FORMATS,
-        "pages": captured_pages,
-        "target_size_kb": target_size,
-        "version": __version__,
-    }
-    with open(run_dir / "run_meta.json", "w") as f:
-        json.dump(metadata, f, indent=2)
-    
-    console.print(f"\n[green]✅ Benchmark complete![/green]")
-    console.print(f"[cyan]Results: {run_dir}[/cyan]")
-
-
-@main.command()
-@click.argument("path", type=click.Path(exists=True))
-def validate(path):
-    """Validate SiFR files."""
-    path = Path(path)
-    files = list(path.glob("**/*.sifr")) if path.is_dir() else [path]
-    valid = invalid = 0
-    for f in files:
-        try:
-            errors = validate_sifr_file(f)
-            if errors:
-                console.print(f"[red]❌ {f.name}[/red]")
-                for err in errors:
-                    console.print(f"   {err}")
-                invalid += 1
-            else:
-                console.print(f"[green]✅ {f.name}[/green]")
-                valid += 1
-        except Exception as e:
-            console.print(f"[red]❌ {f.name}: {e}[/red]")
-            invalid += 1
-    console.print(f"\n[bold]Summary: {valid} valid, {invalid} invalid[/bold]")
-
-
-@
+    main()
