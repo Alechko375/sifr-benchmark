@@ -51,6 +51,76 @@ def format_footnote(reason: FailureReason, details: dict, model: str) -> str:
         return f"{reason.value}: {details}"
 
 
+def render_ground_truth_summary(gt_path: Path, verbose: bool = False):
+    """Render ground truth summary."""
+    if not gt_path.exists():
+        return
+    
+    with open(gt_path) as f:
+        gt = json.load(f)
+    
+    tasks = gt.get("tasks", [])
+    if not tasks:
+        return
+    
+    # Count by type
+    type_counts = {}
+    for task in tasks:
+        task_type = task.get("type", "unknown").replace("action_", "")
+        type_counts[task_type] = type_counts.get(task_type, 0) + 1
+    
+    type_str = ", ".join(f"{count} {t}" for t, count in sorted(type_counts.items()))
+    console.print(f"  [dim]Tasks: {len(tasks)} ({type_str})[/dim]")
+    
+    if verbose:
+        for task in tasks:
+            q = task.get("question", "")[:50]
+            a = task.get("answer", "")
+            text = task.get("element_text", "")
+            console.print(f"    • {q}... → [cyan]{a}[/cyan] ({text})")
+
+
+def render_errors(results: list[dict], format_name: str, verbose: bool = False):
+    """Render errors for a format."""
+    format_results = [r for r in results if r.get("format") == format_name]
+    
+    if not format_results:
+        return
+    
+    # Skip if there are system errors (not actual test failures)
+    if all(r.get("error") for r in format_results):
+        return
+    
+    errors = [r for r in format_results if r.get("score", 0) == 0 and not r.get("error")]
+    successes = [r for r in format_results if r.get("score", 0) > 0]
+    
+    total = len([r for r in format_results if not r.get("error")])
+    error_count = len(errors)
+    
+    if total == 0:
+        return
+    
+    if error_count == 0:
+        if verbose:
+            console.print(f"  [dim]{format_name}:[/dim] [green]All {total} tasks passed[/green]")
+        return
+    
+    console.print(f"  [dim]{format_name}:[/dim] [yellow]{error_count}/{total} errors[/yellow]")
+    
+    for r in errors:
+        task_id = r.get("task_id", "?")
+        expected = r.get("expected", "?")
+        got = r.get("response", "none") or "none"
+        console.print(f"    [red]✗[/red] {task_id}: expected [cyan]{expected}[/cyan], got [yellow]{got}[/yellow]")
+    
+    if verbose and successes:
+        for r in successes:
+            task_id = r.get("task_id", "?")
+            expected = r.get("expected", "?")
+            got = r.get("response", "?")
+            console.print(f"    [green]✓[/green] {task_id}: [cyan]{expected}[/cyan]")
+
+
 def aggregate_by_page(results: list[dict], runner: BenchmarkRunner) -> dict[str, list[FormatResult]]:
     """Group and aggregate results by page_id."""
     from collections import defaultdict
@@ -213,7 +283,8 @@ def run(models, formats, run_dir, runs):
 @click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
 @click.option("--runs", "-r", default=1, type=int, help="Runs per test")
 @click.option("--base-dir", "-b", default="./benchmark_runs", help="Base directory for runs")
-def full_benchmark_e2llm(urls, extension, models, runs, base_dir):
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
+def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
     """Full benchmark: capture → ground truth → test (isolated run)."""
     import asyncio
     
@@ -273,6 +344,7 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir):
                 console.print(f"  ⚠️ {page_id}: {result['error']}")
             else:
                 console.print(f"  ✅ {page_id}")
+                render_ground_truth_summary(gt_output, verbose)
         except Exception as e:
             console.print(f"  ⚠️ {page_id}: {e}")
     
@@ -294,8 +366,18 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir):
     all_summaries = []
     for page_id, summary in by_page.items():
         site_name = page_id.replace("_", ".")
+        
+        # Get results for this page
+        page_results = [r for r in bench_results if r.get("page_id") == page_id]
+        
+        console.print(f"\n[bold]{site_name}[/bold]")
+        
+        # Show errors per format (only for formats that ran successfully)
+        for fmt in ALL_FORMATS:
+            render_errors(page_results, fmt, verbose)
+        
         render_benchmark_results(site_name, summary, model_list[0])
-        console.print()  # Space between tables
+        console.print()
         all_summaries.extend(summary)
     
     # Also show combined summary if multiple pages
@@ -466,7 +548,7 @@ def info():
     console.print(f"\n[bold blue]SiFR Benchmark v{__version__}[/bold blue]\n")
     console.print(f"""
 [bold]Quick Start:[/bold]
-  sifr-bench full-benchmark-e2llm https://news.ycombinator.com -e /path/to/extension
+  sifr-bench full-benchmark-e2llm https://example.com -e /path/to/extension
 
 [bold]Formats tested:[/bold] {', '.join(ALL_FORMATS)}
 
@@ -476,10 +558,16 @@ def info():
   list-runs             Show all benchmark runs
   compare               Compare multiple runs
 
+[bold]Options:[/bold]
+  -v, --verbose         Show detailed output (all tasks, not just errors)
+  -m, --models          Models to test (default: gpt-4o-mini)
+  -r, --runs            Number of runs per test (default: 1)
+
 [bold]Output format:[/bold]
-  ✅ — Success
-  ⚠️ — Warning (works with limitations)
-  ❌ — Failed (with reason)
+  ✅ — Success (accuracy ≥ 50%)
+  ⚠️ — Warning (accuracy < 50%, truncated)
+  ❌ — Failed (accuracy = 0%)
+  🚫 — Not supported by model
   ⏭️ — Skipped (not captured)
 
 [bold]Run Structure:[/bold]
