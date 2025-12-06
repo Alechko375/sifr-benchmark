@@ -104,8 +104,9 @@ async def capture_page(
         page = await context.new_page()
         
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            await page.wait_for_timeout(2000)  # Wait for extension to be ready
+            # Use domcontentloaded - faster and more reliable for SPAs
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)  # Wait for JS to render
             
             result = await capture_with_e2llm(page, selector)
             screenshot = await page.screenshot(full_page=True)
@@ -155,21 +156,23 @@ async def capture_multiple(
         page = await context.new_page()
         
         for url in urls:
+            # Generate page_id BEFORE try block to avoid UnboundLocalError
+            page_id = url.replace("https://", "").replace("http://", "")
+            page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
+            
             try:
                 print(f"Capturing: {url}")
                 
-                await page.goto(url, wait_until="networkidle", timeout=30000)
-                await page.wait_for_timeout(2000)  # Wait for extension
+                # Use domcontentloaded instead of networkidle
+                # networkidle never fires on heavy SPAs like Amazon/YouTube
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(3000)  # Wait for JS to render + extension
                 
                 result = await capture_with_e2llm(page)
                 screenshot = await page.screenshot(full_page=True)
                 
                 # Get real accessibility tree via Playwright
                 axtree = await page.accessibility.snapshot()
-                
-                # Generate page_id from URL
-                page_id = url.replace("https://", "").replace("http://", "")
-                page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
                 
                 sifr_content = result.get("sifr", "")
                 html_content = result.get("html", "")
@@ -201,10 +204,11 @@ async def capture_multiple(
                 await page.wait_for_timeout(500)
                 
             except Exception as e:
-                print(f"  ❌ Error: {e}")
+                print(f"  ❌ Error capturing {page_id}: {e}")
                 # Save empty files to avoid breaking pipeline
                 (output / "sifr" / f"{page_id}.sifr").write_text("", encoding="utf-8")
                 (output / "html" / f"{page_id}.html").write_text("", encoding="utf-8")
+                (output / "axtree" / f"{page_id}.json").write_text("{}", encoding="utf-8")
                 
         await context.close()
     
