@@ -6,11 +6,33 @@ import json
 import time
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 
 from .models import query_model, SUPPORTED_MODELS
 from .scoring import score_response
 from .formats import load_format
+
+
+class FailureReason(Enum):
+    """Reasons why a format benchmark failed or has warnings."""
+    TRUNCATED = "truncated"
+    CONTEXT_EXCEEDED = "context_exceeded"
+    NOT_CAPTURED = "not_captured"
+    ID_MISMATCH = "id_mismatch"
+    NO_VISION = "no_vision"
+
+
+@dataclass
+class FormatResult:
+    """Aggregated result for a single format."""
+    format_name: str
+    accuracy: Optional[float] = None
+    tokens: Optional[int] = None
+    latency_ms: Optional[int] = None
+    status: str = "success"  # "success", "warning", "failed", "skipped"
+    failure_reason: Optional[FailureReason] = None
+    failure_details: dict = field(default_factory=dict)  # Extra context for footnotes
 
 
 @dataclass
@@ -27,6 +49,7 @@ class TestResult:
     tokens: int
     latency_ms: int
     error: Optional[str] = None
+    failure_reason: Optional[FailureReason] = None
 
 
 # Agent-focused prompt template
@@ -47,6 +70,20 @@ Respond in this exact format:
 ANSWER: [element ID]
 CONFIDENCE: [0-100]"""
 
+# All supported formats
+ALL_FORMATS = ["sifr", "html_raw", "html_clean", "axtree", "screenshot"]
+
+# Model context limits (tokens)
+MODEL_CONTEXT_LIMITS = {
+    "gpt-4o-mini": 128000,
+    "gpt-4o": 128000,
+    "claude-3-sonnet": 200000,
+    "claude-3-haiku": 200000,
+}
+
+# Models that support vision
+VISION_MODELS = {"gpt-4o", "gpt-4o-mini", "claude-3-sonnet", "claude-3-haiku"}
+
 
 class BenchmarkRunner:
     """Main benchmark runner for agent tasks."""
@@ -64,7 +101,6 @@ class BenchmarkRunner:
         self.pages = pages
         self.runs = runs
         self.base_dir = Path(base_dir) if base_dir else Path(".")
-
         self._validate_config()
 
     def _validate_config(self):
@@ -76,26 +112,21 @@ class BenchmarkRunner:
     def _load_ground_truth(self, page_id: str) -> dict:
         """Load ground truth for a page."""
         patterns = [
-            self.base_dir / "ground-truth" / f"{page_id}.json",  # New structure
-            self.base_dir / "benchmark" / "ground-truth" / f"{page_id}.json",  # Legacy
+            self.base_dir / "ground-truth" / f"{page_id}.json",
+            self.base_dir / "benchmark" / "ground-truth" / f"{page_id}.json",
         ]
-        
         for path in patterns:
             if path.exists():
                 with open(path, encoding="utf-8") as f:
                     return json.load(f)
-        
         return {}
 
     def _get_tasks_from_ground_truth(self, ground_truth: dict) -> list[dict]:
         """Extract tasks from ground truth."""
-        # New agent format: tasks array
         if "tasks" in ground_truth and isinstance(ground_truth["tasks"], list):
             return ground_truth["tasks"]
         
-        # Legacy format: convert to tasks
         legacy_tasks = []
-        
         if ground_truth.get("title"):
             legacy_tasks.append({
                 "id": "ext_01",
@@ -103,15 +134,13 @@ class BenchmarkRunner:
                 "question": "What element ID contains the page title?",
                 "answer": ground_truth.get("title", "")
             })
-        
         if ground_truth.get("primary_button", {}).get("text"):
             legacy_tasks.append({
                 "id": "act_01",
                 "type": "action_click",
                 "question": f"What element ID should I click to {ground_truth['primary_button']['text']}?",
-                "answer": ""  # Unknown in legacy format
+                "answer": ""
             })
-        
         return legacy_tasks
 
     def _discover_pages(self) -> list[str]:
@@ -119,20 +148,17 @@ class BenchmarkRunner:
         if self.pages:
             return self.pages
 
-        # New structure: base_dir/ground-truth/
         gt_path = self.base_dir / "ground-truth"
         if gt_path.exists():
             pages = [f.stem for f in gt_path.glob("*.json")]
             if pages:
                 return pages
         
-        # Fallback: look for SiFR files
         sifr_path = self.base_dir / "captures" / "sifr"
         if sifr_path.exists():
             pages = [f.stem for f in sifr_path.glob("*.sifr")]
             if pages:
                 return pages
-
         return []
 
     def _build_prompt(self, task: dict, context: str, format_name: str) -> str:
@@ -146,7 +172,6 @@ class BenchmarkRunner:
     def _parse_response(self, raw: str) -> dict:
         """Parse model response."""
         result = {"answer": "", "confidence": 50}
-
         for line in raw.split("\n"):
             line = line.strip()
             if line.upper().startswith("ANSWER:"):
@@ -157,7 +182,6 @@ class BenchmarkRunner:
                 except ValueError:
                     pass
 
-        # Fallback: try to extract element ID from raw response
         if not result["answer"]:
             import re
             ids = re.findall(r'\b([a-z]{2,4}\d{2,4})\b', raw.lower())
@@ -165,8 +189,45 @@ class BenchmarkRunner:
                 result["answer"] = ids[0]
             else:
                 result["answer"] = raw.strip()[:100]
-
         return result
+
+    def _check_format_availability(self, format_name: str, page_id: str, model: str) -> Optional[FormatResult]:
+        """Check if format is available and return FormatResult if it's not runnable."""
+        
+        # Screenshot requires vision model
+        if format_name == "screenshot":
+            if model not in VISION_MODELS:
+                return FormatResult(
+                    format_name=format_name,
+                    status="failed",
+                    failure_reason=FailureReason.NO_VISION,
+                    failure_details={"model": model}
+                )
+            screenshot_path = self.base_dir / "captures" / "screenshots" / f"{page_id}.png"
+            if not screenshot_path.exists():
+                return FormatResult(
+                    format_name=format_name,
+                    status="skipped",
+                    failure_reason=FailureReason.NOT_CAPTURED,
+                    failure_details={"format": "screenshot"}
+                )
+        
+        # html_clean usually not captured by E2LLM API
+        if format_name == "html_clean":
+            html_clean_path = self.base_dir / "captures" / "html_clean" / f"{page_id}.html"
+            if not html_clean_path.exists():
+                return FormatResult(
+                    format_name=format_name,
+                    status="skipped",
+                    failure_reason=FailureReason.NOT_CAPTURED,
+                    failure_details={"format": "html_clean"}
+                )
+        
+        # AXTree has ID mismatch issue
+        if format_name == "axtree":
+            return None  # Let it run, but we'll mark it in results
+        
+        return None  # Format is available
 
     def run_single(
         self,
@@ -177,9 +238,8 @@ class BenchmarkRunner:
         run_num: int,
     ) -> TestResult:
         """Run a single test."""
-
         try:
-            context = load_format(page_id, format_name, self.base_dir)
+            context, meta = load_format(page_id, format_name, self.base_dir, return_meta=True)
         except FileNotFoundError as e:
             return TestResult(
                 model=model,
@@ -194,10 +254,30 @@ class BenchmarkRunner:
                 tokens=0,
                 latency_ms=0,
                 error=f"Format file not found: {format_name}/{page_id}",
+                failure_reason=FailureReason.NOT_CAPTURED,
+            )
+
+        # Check context size
+        approx_tokens = len(context) // 4
+        limit = MODEL_CONTEXT_LIMITS.get(model, 128000)
+        if approx_tokens > limit:
+            return TestResult(
+                model=model,
+                format=format_name,
+                page_id=page_id,
+                task_id=task["id"],
+                run=run_num,
+                response="",
+                expected=task.get("answer", ""),
+                score=0.0,
+                confidence=0,
+                tokens=approx_tokens,
+                latency_ms=0,
+                error=f"Context exceeds limit: {approx_tokens} > {limit}",
+                failure_reason=FailureReason.CONTEXT_EXCEEDED,
             )
 
         prompt = self._build_prompt(task, context, format_name)
-
         start = time.time()
         response_data = query_model(model, prompt)
         latency = int((time.time() - start) * 1000)
@@ -220,14 +300,13 @@ class BenchmarkRunner:
 
         parsed = self._parse_response(response_data["response"])
         expected = task.get("answer", "")
-        element_text = task.get("element_text", "")  # For HTML/AXTree fallback
-        
-        score = score_response(
-            parsed["answer"],
-            expected,
-            task.get("type", "action"),
-            element_text
-        )
+        element_text = task.get("element_text", "")
+        score = score_response(parsed["answer"], expected, task.get("type", "action"), element_text)
+
+        # Determine failure reason for low scores
+        failure_reason = None
+        if score == 0 and format_name == "axtree":
+            failure_reason = FailureReason.ID_MISMATCH
 
         return TestResult(
             model=model,
@@ -241,6 +320,7 @@ class BenchmarkRunner:
             confidence=parsed["confidence"],
             tokens=response_data.get("tokens", 0),
             latency_ms=latency,
+            failure_reason=failure_reason,
         )
 
     def run(self) -> list[dict]:
@@ -262,6 +342,28 @@ class BenchmarkRunner:
 
             for model in self.models:
                 for format_name in self.formats:
+                    # Check format availability
+                    unavailable = self._check_format_availability(format_name, page_id, model)
+                    if unavailable:
+                        # Add placeholder result for skipped format
+                        results.append({
+                            "model": model,
+                            "format": format_name,
+                            "page_id": page_id,
+                            "task_id": "all",
+                            "run": 0,
+                            "response": "",
+                            "expected": "",
+                            "score": 0.0,
+                            "confidence": 0,
+                            "tokens": 0,
+                            "latency_ms": 0,
+                            "error": f"Format unavailable: {unavailable.failure_reason.value}",
+                            "failure_reason": unavailable.failure_reason.value,
+                            "status": unavailable.status,
+                        })
+                        continue
+
                     for task in tasks:
                         for run_num in range(1, self.runs + 1):
                             result = self.run_single(
@@ -271,21 +373,19 @@ class BenchmarkRunner:
                                 task=task,
                                 run_num=run_num,
                             )
-                            results.append(result.__dict__)
-                            
-                            # Rate limiting
+                            result_dict = result.__dict__.copy()
+                            if result.failure_reason:
+                                result_dict["failure_reason"] = result.failure_reason.value
+                            results.append(result_dict)
                             time.sleep(0.3)
 
         return results
 
-    def aggregate(self, results: list[dict]) -> list[dict]:
-        """Aggregate results by format (across models)."""
+    def aggregate(self, results: list[dict]) -> list[FormatResult]:
+        """Aggregate results by format with failure tracking."""
         agg = {}
 
         for r in results:
-            if r.get("error"):
-                continue
-
             key = r["format"]
             if key not in agg:
                 agg[key] = {
@@ -293,23 +393,66 @@ class BenchmarkRunner:
                     "scores": [],
                     "tokens": [],
                     "latencies": [],
+                    "errors": [],
+                    "failure_reasons": [],
+                    "status": r.get("status", "success"),
                 }
 
-            agg[key]["scores"].append(r["score"])
-            agg[key]["tokens"].append(r["tokens"])
-            agg[key]["latencies"].append(r["latency_ms"])
+            if r.get("error"):
+                agg[key]["errors"].append(r["error"])
+                if r.get("failure_reason"):
+                    agg[key]["failure_reasons"].append(r["failure_reason"])
+            else:
+                agg[key]["scores"].append(r["score"])
+                agg[key]["tokens"].append(r["tokens"])
+                agg[key]["latencies"].append(r["latency_ms"])
 
         summary = []
         for data in agg.values():
             scores = data["scores"]
             tokens = data["tokens"]
             latencies = data["latencies"]
+            
+            # Determine status and failure reason
+            status = "success"
+            failure_reason = None
+            failure_details = {}
+            
+            if data.get("status") == "skipped":
+                status = "skipped"
+                if data["failure_reasons"]:
+                    failure_reason = FailureReason(data["failure_reasons"][0])
+            elif data.get("status") == "failed":
+                status = "failed"
+                if data["failure_reasons"]:
+                    failure_reason = FailureReason(data["failure_reasons"][0])
+            elif not scores and data["errors"]:
+                status = "failed"
+                # Determine failure reason from errors
+                error_str = data["errors"][0] if data["errors"] else ""
+                if "Context exceeds" in error_str:
+                    failure_reason = FailureReason.CONTEXT_EXCEEDED
+                    # Extract token count from error
+                    import re
+                    match = re.search(r'(\d+) > (\d+)', error_str)
+                    if match:
+                        failure_details = {"tokens": int(match.group(1)), "limit": int(match.group(2))}
+                elif "not found" in error_str.lower():
+                    failure_reason = FailureReason.NOT_CAPTURED
+            elif scores and sum(scores) / len(scores) < 0.1 and data["format"] == "axtree":
+                status = "failed"
+                failure_reason = FailureReason.ID_MISMATCH
 
-            summary.append({
-                "format": data["format"],
-                "accuracy": f"{(sum(scores) / len(scores) * 100):.1f}%" if scores else "N/A",
-                "avg_tokens": int(sum(tokens) / len(tokens)) if tokens else 0,
-                "avg_latency": f"{int(sum(latencies) / len(latencies))}ms" if latencies else "N/A",
-            })
+            result = FormatResult(
+                format_name=data["format"],
+                accuracy=sum(scores) / len(scores) if scores else None,
+                tokens=int(sum(tokens) / len(tokens)) if tokens else None,
+                latency_ms=int(sum(latencies) / len(latencies)) if latencies else None,
+                status=status,
+                failure_reason=failure_reason,
+                failure_details=failure_details,
+            )
+            summary.append(result)
 
-        return sorted(summary, key=lambda x: float(x["accuracy"].rstrip("%") or 0), reverse=True)
+        # Sort by accuracy (None values last)
+        return sorted(summary, key=lambda x: (x.accuracy is None, -(x.accuracy or 0)))
