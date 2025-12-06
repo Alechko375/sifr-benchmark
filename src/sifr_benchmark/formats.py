@@ -19,11 +19,11 @@ class FormatMeta:
     path: str = ""
 
 
-# Truncation limits
-MAX_CHARS = 100000  # ~25K tokens, safe limit for all formats
+# Default truncation limit (can be overridden via max_chars parameter)
+DEFAULT_MAX_CHARS = 400 * 1024  # 400KB default, same as CLI default
 
 
-def _truncate_content(content: str, max_chars: int = MAX_CHARS) -> Tuple[str, bool, int]:
+def _truncate_content(content: str, max_chars: int = DEFAULT_MAX_CHARS) -> Tuple[str, bool, int]:
     """
     Truncate content if too large.
     Returns: (content, was_truncated, original_size)
@@ -46,7 +46,8 @@ def _truncate_content(content: str, max_chars: int = MAX_CHARS) -> Tuple[str, bo
 def load_sifr(
     page_id: str, 
     base_dir: Optional[Path] = None,
-    return_meta: bool = False
+    return_meta: bool = False,
+    max_chars: int = DEFAULT_MAX_CHARS
 ) -> Union[str, Tuple[str, FormatMeta]]:
     """Load a SiFR file, truncating if too large."""
     paths_to_try = []
@@ -62,7 +63,7 @@ def load_sifr(
     for path in paths_to_try:
         if path.exists():
             content = path.read_text(encoding="utf-8")
-            content, was_truncated, original_size = _truncate_content(content)
+            content, was_truncated, original_size = _truncate_content(content, max_chars)
             
             if return_meta:
                 meta = FormatMeta(
@@ -82,7 +83,8 @@ def load_html(
     page_id: str, 
     base_dir: Optional[Path] = None, 
     clean: bool = False,
-    return_meta: bool = False
+    return_meta: bool = False,
+    max_chars: int = DEFAULT_MAX_CHARS
 ) -> Union[str, Tuple[str, FormatMeta]]:
     """Load an HTML file, truncating if too large."""
     format_name = "html_clean" if clean else "html_raw"
@@ -102,7 +104,7 @@ def load_html(
     for path in paths_to_try:
         if path.exists():
             content = path.read_text(encoding="utf-8")
-            content, was_truncated, original_size = _truncate_content(content)
+            content, was_truncated, original_size = _truncate_content(content, max_chars)
             
             if return_meta:
                 meta = FormatMeta(
@@ -121,7 +123,8 @@ def load_html(
 def load_axtree(
     page_id: str, 
     base_dir: Optional[Path] = None,
-    return_meta: bool = False
+    return_meta: bool = False,
+    max_chars: int = DEFAULT_MAX_CHARS
 ) -> Union[str, Tuple[str, FormatMeta]]:
     """Load an accessibility tree file, truncating if too large."""
     paths_to_try = []
@@ -146,7 +149,7 @@ def load_axtree(
                 except json.JSONDecodeError:
                     pass
             
-            content, was_truncated, original_size = _truncate_content(content)
+            content, was_truncated, original_size = _truncate_content(content, max_chars)
             
             if return_meta:
                 meta = FormatMeta(
@@ -165,7 +168,8 @@ def load_axtree(
 def load_screenshot(
     page_id: str,
     base_dir: Optional[Path] = None,
-    return_meta: bool = False
+    return_meta: bool = False,
+    max_chars: int = DEFAULT_MAX_CHARS  # unused for screenshots, but keeps signature consistent
 ) -> Union[bytes, Tuple[bytes, FormatMeta]]:
     """Load a screenshot file."""
     paths_to_try = []
@@ -198,7 +202,8 @@ def load_format(
     page_id: str, 
     format_name: str, 
     base_dir: Optional[Path] = None,
-    return_meta: bool = False
+    return_meta: bool = False,
+    max_chars: int = DEFAULT_MAX_CHARS
 ) -> Union[str, Tuple[str, FormatMeta]]:
     """
     Load a page in specified format.
@@ -208,21 +213,22 @@ def load_format(
         format_name: One of: sifr, html_raw, html_clean, axtree, screenshot
         base_dir: Run directory (new structure) or None for legacy
         return_meta: If True, return (content, FormatMeta) tuple
+        max_chars: Maximum characters before truncation (default: 400KB)
         
     Returns:
         File content as string (or bytes for screenshot)
         If return_meta=True: (content, FormatMeta)
     """
     if format_name == "sifr":
-        return load_sifr(page_id, base_dir, return_meta)
+        return load_sifr(page_id, base_dir, return_meta, max_chars)
     elif format_name == "html_raw":
-        return load_html(page_id, base_dir, clean=False, return_meta=return_meta)
+        return load_html(page_id, base_dir, clean=False, return_meta=return_meta, max_chars=max_chars)
     elif format_name == "html_clean":
-        return load_html(page_id, base_dir, clean=True, return_meta=return_meta)
+        return load_html(page_id, base_dir, clean=True, return_meta=return_meta, max_chars=max_chars)
     elif format_name == "axtree":
-        return load_axtree(page_id, base_dir, return_meta)
+        return load_axtree(page_id, base_dir, return_meta, max_chars)
     elif format_name == "screenshot":
-        return load_screenshot(page_id, base_dir, return_meta)
+        return load_screenshot(page_id, base_dir, return_meta, max_chars)
     else:
         raise ValueError(f"Unknown format: {format_name}")
 
@@ -274,7 +280,7 @@ def validate_sifr_file(path: Path) -> list[str]:
     return errors
 
 
-def get_format_stats(page_id: str, base_dir: Path) -> dict:
+def get_format_stats(page_id: str, base_dir: Path, max_chars: int = DEFAULT_MAX_CHARS) -> dict:
     """Get size statistics for all formats of a page."""
     stats = {}
     
@@ -283,7 +289,7 @@ def get_format_stats(page_id: str, base_dir: Path) -> dict:
             if fmt == "screenshot":
                 _, meta = load_screenshot(page_id, base_dir, return_meta=True)
             else:
-                _, meta = load_format(page_id, fmt, base_dir, return_meta=True)
+                _, meta = load_format(page_id, fmt, base_dir, return_meta=True, max_chars=max_chars)
             
             stats[fmt] = {
                 "original_size": meta.original_size,
