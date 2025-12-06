@@ -12,7 +12,7 @@ from enum import Enum
 
 from .models import query_model, SUPPORTED_MODELS, supports_vision
 from .scoring import score_response
-from .formats import load_format, FormatMeta
+from .formats import load_format, FormatMeta, DEFAULT_MAX_CHARS
 
 
 class FailureReason(Enum):
@@ -33,7 +33,7 @@ class FormatResult:
     latency_ms: Optional[int] = None
     status: str = "success"  # "success", "warning", "failed", "skipped"
     failure_reason: Optional[FailureReason] = None
-    failure_details: dict = field(default_factory=dict)  # Extra context for footnotes
+    failure_details: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -110,12 +110,14 @@ class BenchmarkRunner:
         pages: Optional[list[str]] = None,
         runs: int = 1,
         base_dir: Optional[Path] = None,
+        max_chars: int = DEFAULT_MAX_CHARS,
     ):
         self.models = models
         self.formats = formats
         self.pages = pages
         self.runs = runs
         self.base_dir = Path(base_dir) if base_dir else Path(".")
+        self.max_chars = max_chars
         self._validate_config()
 
     def _validate_config(self):
@@ -249,7 +251,13 @@ class BenchmarkRunner:
             return self._run_screenshot_test(model, page_id, task, run_num)
         
         try:
-            result = load_format(page_id, format_name, self.base_dir, return_meta=True)
+            result = load_format(
+                page_id, 
+                format_name, 
+                self.base_dir, 
+                return_meta=True,
+                max_chars=self.max_chars
+            )
             context, meta = result
         except FileNotFoundError as e:
             return TestResult(
