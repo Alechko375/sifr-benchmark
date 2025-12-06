@@ -24,15 +24,16 @@ STATUS_ICONS = {
     "warning": "⚠️",
     "failed": "❌",
     "skipped": "⏭️",
+    "not_supported": "🚫",
 }
 
 # Footnote templates
 FOOTNOTE_TEMPLATES = {
-    FailureReason.TRUNCATED: "SiFR truncated: {original_kb}KB → {truncated_kb}KB (E2LLM API bug)",
+    FailureReason.TRUNCATED: "Truncated: {original_kb}KB → {truncated_kb}KB",
     FailureReason.CONTEXT_EXCEEDED: "Exceeds context: {tokens:,} tokens > {limit:,} limit ({model})",
-    FailureReason.NOT_CAPTURED: "Not captured: E2LLM API doesn't provide {format}",
+    FailureReason.NOT_CAPTURED: "Not captured: file not found for {format}",
     FailureReason.ID_MISMATCH: "ID mismatch: AXTree uses own IDs, incompatible with ground truth",
-    FailureReason.NO_VISION: "Model limitation: {model} doesn't support vision input",
+    FailureReason.NO_VISION: "Not supported: vision input not implemented",
 }
 
 
@@ -48,6 +49,23 @@ def format_footnote(reason: FailureReason, details: dict, model: str) -> str:
         return template.format(**details)
     except KeyError:
         return f"{reason.value}: {details}"
+
+
+def aggregate_by_page(results: list[dict], runner: BenchmarkRunner) -> dict[str, list[FormatResult]]:
+    """Group and aggregate results by page_id."""
+    from collections import defaultdict
+    
+    # Group by page_id
+    by_page = defaultdict(list)
+    for r in results:
+        by_page[r["page_id"]].append(r)
+    
+    # Aggregate each page separately
+    aggregated = {}
+    for page_id, page_results in by_page.items():
+        aggregated[page_id] = runner.aggregate(page_results)
+    
+    return aggregated
 
 
 def render_benchmark_results(site_name: str, results: list[FormatResult], model: str):
@@ -73,8 +91,12 @@ def render_benchmark_results(site_name: str, results: list[FormatResult], model:
         tokens = f"{r.tokens:,}" if r.tokens else "—"
         latency = f"{r.latency_ms:,}ms" if r.latency_ms else "—"
         
-        # Status with footnote reference
-        if r.failure_reason:
+        # Determine status icon
+        if r.status == "not_supported":
+            status = f"{STATUS_ICONS['not_supported']} [{footnote_idx}]"
+            footnotes.append((footnote_idx, r.failure_reason, r.failure_details))
+            footnote_idx += 1
+        elif r.failure_reason:
             status = f"{STATUS_ICONS[r.status]} [{footnote_idx}]"
             footnotes.append((footnote_idx, r.failure_reason, r.failure_details))
             footnote_idx += 1
@@ -265,32 +287,43 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir):
     )
     
     bench_results = runner.run()
-    summary = runner.aggregate(bench_results)
     
-    # Get site name for display
-    site_name = urls[0].replace("https://", "").replace("http://", "").split("/")[0]
-    site_name = site_name.replace(".", "_")
+    # Aggregate by page and show table for each
+    by_page = aggregate_by_page(bench_results, runner)
     
-    render_benchmark_results(site_name, summary, model_list[0])
+    all_summaries = []
+    for page_id, summary in by_page.items():
+        site_name = page_id.replace("_", ".")
+        render_benchmark_results(site_name, summary, model_list[0])
+        console.print()  # Space between tables
+        all_summaries.extend(summary)
+    
+    # Also show combined summary if multiple pages
+    if len(by_page) > 1:
+        combined = runner.aggregate(bench_results)
+        render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
     
     # Save results
     with open(run_dir / "results" / "raw_results.json", "w") as f:
         json.dump(bench_results, f, indent=2, default=str)
     
-    summary_data = [
-        {
-            "format": r.format_name,
-            "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
-            "avg_tokens": r.tokens or 0,
-            "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
-            "status": r.status,
-            "failure_reason": r.failure_reason.value if r.failure_reason else None,
-        }
-        for r in summary
-    ]
+    # Save per-page summaries
+    summary_by_page = {}
+    for page_id, summary in by_page.items():
+        summary_by_page[page_id] = [
+            {
+                "format": r.format_name,
+                "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
+                "avg_tokens": r.tokens or 0,
+                "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
+                "status": r.status,
+                "failure_reason": r.failure_reason.value if r.failure_reason else None,
+            }
+            for r in summary
+        ]
     
     with open(run_dir / "results" / "summary.json", "w") as f:
-        json.dump(summary_data, f, indent=2)
+        json.dump(summary_by_page, f, indent=2)
     
     # Save run metadata
     metadata = {
