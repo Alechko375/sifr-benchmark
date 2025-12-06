@@ -74,7 +74,7 @@ ANSWER: [element ID]
 CONFIDENCE: [0-100]"""
 
 # All supported formats
-ALL_FORMATS = ["sifr", "html_raw", "html_clean", "axtree", "screenshot"]
+ALL_FORMATS = ["sifr", "html_raw", "axtree", "screenshot"]
 
 # Model context limits (tokens)
 MODEL_CONTEXT_LIMITS = {
@@ -213,17 +213,6 @@ class BenchmarkRunner:
                     status="skipped",
                     failure_reason=FailureReason.NOT_CAPTURED,
                     failure_details={"format": "screenshot"}
-                )
-        
-        # html_clean usually not captured by E2LLM API
-        if format_name == "html_clean":
-            html_clean_path = self.base_dir / "captures" / "html_clean" / f"{page_id}.html"
-            if not html_clean_path.exists():
-                return FormatResult(
-                    format_name=format_name,
-                    status="skipped",
-                    failure_reason=FailureReason.NOT_CAPTURED,
-                    failure_details={"format": "html_clean"}
                 )
         
         # AXTree has ID mismatch issue
