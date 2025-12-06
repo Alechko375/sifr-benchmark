@@ -278,7 +278,7 @@ def get_format_stats(page_id: str, base_dir: Path) -> dict:
     """Get size statistics for all formats of a page."""
     stats = {}
     
-    for fmt in ["sifr", "html_raw", "html_clean", "axtree", "screenshot"]:
+    for fmt in ["sifr", "html_raw", "axtree", "screenshot"]:
         try:
             if fmt == "screenshot":
                 _, meta = load_screenshot(page_id, base_dir, return_meta=True)
