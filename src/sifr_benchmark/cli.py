@@ -18,6 +18,9 @@ from .formats import validate_sifr_file
 
 console = Console()
 
+# Default SiFR budget in KB
+DEFAULT_TARGET_SIZE_KB = 100
+
 # Status icons for output
 STATUS_ICONS = {
     "success": "✅",
@@ -41,7 +44,6 @@ def format_footnote(reason: FailureReason, details: dict, model: str) -> str:
     """Format a footnote message based on failure reason."""
     template = FOOTNOTE_TEMPLATES.get(reason, str(reason))
     
-    # Add model to details if needed
     details = details.copy()
     details["model"] = model
     
@@ -63,7 +65,6 @@ def render_ground_truth_summary(gt_path: Path, verbose: bool = False):
     if not tasks:
         return
     
-    # Count by type
     type_counts = {}
     for task in tasks:
         task_type = task.get("type", "unknown").replace("action_", "")
@@ -87,7 +88,6 @@ def render_errors(results: list[dict], format_name: str, verbose: bool = False):
     if not format_results:
         return
     
-    # Skip if there are system errors (not actual test failures)
     if all(r.get("error") for r in format_results):
         return
     
@@ -117,7 +117,6 @@ def render_errors(results: list[dict], format_name: str, verbose: bool = False):
         for r in successes:
             task_id = r.get("task_id", "?")
             expected = r.get("expected", "?")
-            got = r.get("response", "?")
             console.print(f"    [green]✓[/green] {task_id}: [cyan]{expected}[/cyan]")
 
 
@@ -125,12 +124,10 @@ def aggregate_by_page(results: list[dict], runner: BenchmarkRunner) -> dict[str,
     """Group and aggregate results by page_id."""
     from collections import defaultdict
     
-    # Group by page_id
     by_page = defaultdict(list)
     for r in results:
         by_page[r["page_id"]].append(r)
     
-    # Aggregate each page separately
     aggregated = {}
     for page_id, page_results in by_page.items():
         aggregated[page_id] = runner.aggregate(page_results)
@@ -152,7 +149,6 @@ def render_benchmark_results(site_name: str, results: list[FormatResult], model:
     footnote_idx = 1
     
     for r in results:
-        # Format values
         if r.accuracy is not None:
             acc = f"{r.accuracy * 100:.1f}%"
         else:
@@ -161,7 +157,6 @@ def render_benchmark_results(site_name: str, results: list[FormatResult], model:
         tokens = f"{r.tokens:,}" if r.tokens else "—"
         latency = f"{r.latency_ms:,}ms" if r.latency_ms else "—"
         
-        # Determine status icon
         if r.status == "not_supported":
             status = f"{STATUS_ICONS['not_supported']} [{footnote_idx}]"
             footnotes.append((footnote_idx, r.failure_reason, r.failure_details))
@@ -177,7 +172,6 @@ def render_benchmark_results(site_name: str, results: list[FormatResult], model:
     
     console.print(table)
     
-    # Print footnotes
     if footnotes:
         console.print()
         for idx, reason, details in footnotes:
@@ -243,7 +237,6 @@ def run(models, formats, run_dir, runs):
     
     summary = runner.aggregate(results)
     
-    # Get site name from run_meta or directory
     meta_path = run_path / "run_meta.json"
     site_name = run_path.name
     if meta_path.exists():
@@ -254,7 +247,6 @@ def run(models, formats, run_dir, runs):
     
     render_benchmark_results(site_name, summary, model_list[0])
     
-    # Save results
     raw_results_path = run_path / "results" / "raw_results.json"
     with open(raw_results_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
@@ -284,7 +276,13 @@ def run(models, formats, run_dir, runs):
 @click.option("--runs", "-r", default=1, type=int, help="Runs per test")
 @click.option("--base-dir", "-b", default="./benchmark_runs", help="Base directory for runs")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
-def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
+@click.option(
+    "--target-size", "-s",
+    default=DEFAULT_TARGET_SIZE_KB,
+    type=int,
+    help=f"Target SiFR size in KB (default: {DEFAULT_TARGET_SIZE_KB}, max: 380)"
+)
+def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, target_size):
     """Full benchmark: capture → ground truth → test (isolated run)."""
     import asyncio
     
@@ -296,11 +294,13 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
     
     run_dir = create_run_dir(base_dir)
     model_list = [m.strip() for m in models.split(",")]
+    target_size_bytes = target_size * 1024
     
     console.print(f"[bold blue]🚀 Full Benchmark with E2LLM[/bold blue]")
     console.print(f"Run directory: [cyan]{run_dir}[/cyan]")
     console.print(f"URLs: {len(urls)}")
     console.print(f"Formats: {', '.join(ALL_FORMATS)}")
+    console.print(f"SiFR budget: [yellow]{target_size}KB[/yellow]")
     
     # Step 1: Capture
     console.print("\n[bold]Step 1/3: Capturing with E2LLM...[/bold]")
@@ -309,7 +309,8 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
     results = asyncio.run(capture_multiple(
         urls=list(urls),
         extension_path=extension,
-        output_dir=str(captures_dir)
+        output_dir=str(captures_dir),
+        target_size=target_size_bytes
     ))
     
     captured_pages = []
@@ -317,7 +318,6 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
         page_id = url.replace("https://", "").replace("http://", "")
         page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
         captured_pages.append(page_id)
-        console.print(f"  ✅ Saved: {page_id}")
     
     console.print(f"[green]✅ Captured {len(results)} pages[/green]")
     
@@ -348,7 +348,7 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
         except Exception as e:
             console.print(f"  ⚠️ {page_id}: {e}")
     
-    # Step 3: Benchmark (all 5 formats)
+    # Step 3: Benchmark
     console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
     
     runner = BenchmarkRunner(
@@ -360,19 +360,15 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
     
     bench_results = runner.run()
     
-    # Aggregate by page and show table for each
     by_page = aggregate_by_page(bench_results, runner)
     
     all_summaries = []
     for page_id, summary in by_page.items():
         site_name = page_id.replace("_", ".")
-        
-        # Get results for this page
         page_results = [r for r in bench_results if r.get("page_id") == page_id]
         
         console.print(f"\n[bold]{site_name}[/bold]")
         
-        # Show errors per format (only for formats that ran successfully)
         for fmt in ALL_FORMATS:
             render_errors(page_results, fmt, verbose)
         
@@ -380,16 +376,13 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
         console.print()
         all_summaries.extend(summary)
     
-    # Also show combined summary if multiple pages
     if len(by_page) > 1:
         combined = runner.aggregate(bench_results)
         render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
     
-    # Save results
     with open(run_dir / "results" / "raw_results.json", "w") as f:
         json.dump(bench_results, f, indent=2, default=str)
     
-    # Save per-page summaries
     summary_by_page = {}
     for page_id, summary in by_page.items():
         summary_by_page[page_id] = [
@@ -407,13 +400,13 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose):
     with open(run_dir / "results" / "summary.json", "w") as f:
         json.dump(summary_by_page, f, indent=2)
     
-    # Save run metadata
     metadata = {
         "timestamp": datetime.now().isoformat(),
         "urls": list(urls),
         "models": model_list,
         "formats": ALL_FORMATS,
         "pages": captured_pages,
+        "target_size_kb": target_size,
         "version": __version__,
     }
     with open(run_dir / "run_meta.json", "w") as f:
@@ -461,9 +454,9 @@ def compare(run_dirs):
     table.add_column("Run", style="cyan")
     table.add_column("Date", style="dim")
     table.add_column("Pages", style="yellow")
+    table.add_column("Budget", style="blue")
     table.add_column("Best Format", style="green")
     table.add_column("Accuracy", style="magenta")
-    table.add_column("Tokens", style="blue")
     
     for d in run_dirs:
         run_path = Path(d)
@@ -482,20 +475,21 @@ def compare(run_dirs):
                 meta = json.load(f)
         
         if summary:
-            # Filter out failed/skipped
             valid = [s for s in summary if s.get("status", "success") == "success"]
             if valid:
                 best = max(valid, key=lambda x: float(x["accuracy"].rstrip("%") or 0))
             else:
                 best = summary[0]
             
+            budget = f"{meta.get('target_size_kb', '?')}KB"
+            
             table.add_row(
                 run_path.name,
                 meta.get("timestamp", "")[:10],
                 str(len(meta.get("pages", []))),
+                budget,
                 best["format"],
-                best["accuracy"],
-                str(best["avg_tokens"])
+                best["accuracy"]
             )
     
     console.print(table)
@@ -513,7 +507,7 @@ def list_runs():
     table.add_column("Run", style="cyan")
     table.add_column("Date", style="dim")
     table.add_column("URLs", style="yellow")
-    table.add_column("Formats", style="blue")
+    table.add_column("Budget", style="blue")
     table.add_column("Status", style="green")
     
     for run_dir in sorted(runs_dir.iterdir(), reverse=True):
@@ -529,13 +523,13 @@ def list_runs():
                 meta = json.load(f)
         
         status = "✅ Complete" if results_path.exists() else "⏳ Partial"
-        formats_count = len(meta.get("formats", []))
+        budget = f"{meta.get('target_size_kb', '?')}KB"
         
         table.add_row(
             run_dir.name,
             meta.get("timestamp", "")[:16].replace("T", " "),
             str(len(meta.get("urls", []))),
-            str(formats_count),
+            budget,
             status
         )
     
@@ -559,9 +553,16 @@ def info():
   compare               Compare multiple runs
 
 [bold]Options:[/bold]
-  -v, --verbose         Show detailed output (all tasks, not just errors)
+  -v, --verbose         Show detailed output
   -m, --models          Models to test (default: gpt-4o-mini)
   -r, --runs            Number of runs per test (default: 1)
+  -s, --target-size     SiFR budget in KB (default: {DEFAULT_TARGET_SIZE_KB}, max: 380)
+
+[bold]SiFR Budget Guide:[/bold]
+  50KB   Ultra-compact, minimal tokens, may lose elements
+  100KB  Balanced (default), good accuracy vs cost
+  200KB  High accuracy, more tokens
+  380KB  Maximum accuracy, near LLM context limit
 
 [bold]Output format:[/bold]
   ✅ — Success (accuracy ≥ 50%)
@@ -569,17 +570,6 @@ def info():
   ❌ — Failed (accuracy = 0%)
   🚫 — Not supported by model
   ⏭️ — Skipped (not captured)
-
-[bold]Run Structure:[/bold]
-  benchmark_runs/run_YYYYMMDD_HHMMSS/
-  ├── captures/
-  │   ├── sifr/
-  │   ├── html/
-  │   ├── axtree/
-  │   └── screenshots/
-  ├── ground-truth/
-  ├── results/
-  └── run_meta.json
 """)
 
 
