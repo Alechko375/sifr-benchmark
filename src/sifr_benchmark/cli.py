@@ -33,7 +33,7 @@ FOOTNOTE_TEMPLATES = {
     FailureReason.CONTEXT_EXCEEDED: "Exceeds context: {tokens:,} tokens > {limit:,} limit ({model})",
     FailureReason.NOT_CAPTURED: "Not captured: file not found for {format}",
     FailureReason.ID_MISMATCH: "ID mismatch: AXTree uses own IDs, incompatible with ground truth",
-    FailureReason.NO_VISION: "Not supported: vision input not implemented",
+    FailureReason.NO_VISION: "Not supported: {model} doesn't support vision",
 }
 
 
@@ -487,7 +487,6 @@ def info():
   ├── captures/
   │   ├── sifr/
   │   ├── html/
-  │   ├── html_clean/
   │   ├── axtree/
   │   └── screenshots/
   ├── ground-truth/
