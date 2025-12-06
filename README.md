@@ -1,47 +1,57 @@
-# sifr-benchmark
+# SiFR Benchmark
 
-**How well do AI agents understand web UI?**  
-Benchmark comparing SiFR vs HTML vs AXTree vs Screenshots.
+**How well do AI agents understand web UI?**
 
-## Prerequisites
-
-### Element-to-LLM Chrome Extension
-
-To capture web pages in SiFR format, install the Element-to-LLM browser extension:
-
-1. **Chrome Web Store**: [Element-to-LLM](https://chromewebstore.google.com/detail/element-to-llm-dom-captur/oofdfeinchhgnhlikkfdfcldbpcjcgnj)
-2. Open any webpage
-3. Click extension icon → **Capture as SiFR**
-4. Save the `.sifr` file to `examples/` or `datasets/formats/sifr/`
-
-> Without this extension, you can only run benchmarks on pre-captured pages.
+Benchmark comparing SiFR vs HTML vs AXTree vs Screenshots across 10 complex websites.
 
 ## Results
 
-| Format | Tokens (avg) | Accuracy | Cost/Task |
-|--------|-------------|----------|-----------|
-| **SiFR** | 2,100 | **89%** | $0.002 |
-| Screenshot | 4,200 | 71% | $0.012 |
-| AXTree | 3,800 | 52% | $0.004 |
-| Raw HTML | 8,500 | 45% | $0.008 |
+Tested on 10 high-complexity sites: Amazon, YouTube, Reddit, eBay, Walmart, Airbnb, Yelp, IMDB, ESPN, GitHub.
 
-→ SiFR: **75% fewer tokens**, **2x accuracy** vs HTML
+| Format | Accuracy | Tokens (avg) | Latency | 
+|--------|----------|--------------|---------|
+| **SiFR** | **64.6%** | 25,512 | 7.5s |
+| Screenshot | 21.5% | 37,765 | 8.0s |
+| Raw HTML | 4.7% | 32,879 | 8.3s |
+| AXTree | 3.0% | 5,289 | 1.9s |
+
+**SiFR is 3x more accurate than screenshots and 14x more accurate than raw HTML.**
+
+### Per-Site Breakdown
+
+| Site | SiFR | Screenshot | HTML | AXTree |
+|------|------|------------|------|--------|
+| GitHub | 🏆 **100%** | 0% | 0% | 0% |
+| YouTube | 🏆 **100%** | 53.3% | 0% | 0% |
+| Walmart | 🏆 **85.7%** | 30% | 11.4% | 0% |
+| Reddit | 🏆 **83.3%** | 0% | 0% | 0% |
+| eBay | 🏆 **71.4%** | 13.3% | 0% | 14.3% |
+| Amazon | 🏆 **66.7%** | 25.7% | 0% | 0% |
+| Airbnb | 🏆 **57.1%** | 0% | 34.3% | 0% |
+| Yelp | 🤝 50% | 50% | 0% | 12.5% |
+| ESPN | 🏆 **42.9%** | 0% | 0% | 0% |
+| IMDB | 0% | 🏆 **45%** | 0% | 0% |
+
+SiFR wins on **9 out of 10 sites**.
 
 ## What is SiFR?
 
-Structured Interface Format for Representation.  
-A compact way to describe web UI for LLMs.
+**Structured Interface Format for Representation** — a compact format optimized for LLM understanding of web UI.
 
 ```yaml
-btn015:
-  type: button
+a015:
+  tag: a
   text: "Add to Cart"
-  position: [500, 300, 120, 40]
-  state: enabled
-  parent: product-card
+  box: [500, 300, 120, 40]
+  attrs: {href: "/cart/add", class: "btn-primary"}
+  salience: high
 ```
 
-Full spec: [SPEC.md](SPEC.md)
+Key advantages:
+- **Compact**: 10-20x smaller than raw HTML
+- **Actionable IDs**: Every element has a unique ID (`a015`, `btn003`)
+- **Salience scoring**: High/medium/low importance ranking
+- **LLM-native**: Structured for AI comprehension
 
 ## Installation
 
@@ -49,97 +59,156 @@ Full spec: [SPEC.md](SPEC.md)
 pip install sifr-benchmark
 ```
 
+### Prerequisites
+
+1. **Element-to-LLM Chrome Extension** — captures pages in SiFR format
+   - [Chrome Web Store](https://chromewebstore.google.com/detail/element-to-llm/your-extension-id)
+   - Or load unpacked from `element-to-llm-chrome/`
+
+2. **API Keys**
+   ```bash
+   export OPENAI_API_KEY=sk-...
+   export ANTHROPIC_API_KEY=sk-ant-...  # optional
+   ```
+
+3. **Playwright** (for automated capture)
+   ```bash
+   playwright install chromium
+   ```
+
 ## Quick Start
 
-### 1. Capture pages (using Element-to-LLM extension)
+### Full Benchmark (Recommended)
 
-1. Install [Element-to-LLM](https://chromewebstore.google.com/detail/element-to-llm-dom-captur/oofdfeinchhgnhlikkfdfcldbpcjcgnj) extension
-2. Open target page (e.g., Amazon product page)
-3. Click extension → **Export SiFR**
-4. Save as `examples/my_page.sifr`
-
-### 2. Run benchmark
+Capture → Generate Ground Truth → Test — all in one command:
 
 ```bash
-# Set API keys
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
+sifr-bench full-benchmark-e2llm https://www.amazon.com https://www.youtube.com \
+  -e /path/to/element-to-llm-extension \
+  -s 400
+```
 
-# Run benchmark
-sifr-bench run --models gpt-4o-mini,claude-haiku --formats sifr,html_raw
+Options:
+- `-e, --extension` — Path to E2LLM extension (required)
+- `-s, --target-size` — SiFR budget in KB (default: 100, max: 380)
+- `-m, --models` — Models to test (default: gpt-4o-mini)
+- `-v, --verbose` — Show detailed output
 
-# Validate your SiFR files
+### Other Commands
+
+```bash
+# List all benchmark runs
+sifr-bench list-runs
+
+# Compare multiple runs
+sifr-bench compare benchmark_runs/run_1 benchmark_runs/run_2
+
+# Validate SiFR files
 sifr-bench validate examples/
 
-# View info
+# Show help
 sifr-bench info
 ```
 
-## Repository Structure
+## How It Works
+
+### 1. Capture (E2LLM Extension)
+
+The extension captures 4 formats simultaneously:
+- **SiFR** — Structured format with salience scoring
+- **HTML** — Raw rendered DOM (`outerHTML`)
+- **AXTree** — Playwright accessibility tree
+- **Screenshot** — Full-page PNG
+
+### 2. Ground Truth Generation
+
+GPT-4o Vision analyzes the screenshot + SiFR to generate tasks:
+- **Click tasks**: "Click the Sign In button" → `a003`
+- **Input tasks**: "Enter search query" → `input001`
+- **Locate tasks**: "Find the main heading" → `h1001`
+
+### 3. Benchmark
+
+Each format is tested against the same ground truth:
+```
+Question: "Click on the shopping cart icon"
+Expected: a015
+SiFR response: a015 ✓
+HTML response: none ✗
+```
+
+## Output Format
 
 ```
-├── spec/
-│   └── SPEC.md              # SiFR format specification
-├── benchmark/
-│   ├── protocol.md          # Test methodology
-│   ├── tasks.json           # 25 standardized tasks
-│   └── ground-truth/        # Verified answers per page
-├── datasets/
-│   ├── pages/               # Test page snapshots
-│   │   ├── ecommerce/
-│   │   ├── news/
-│   │   ├── saas/
-│   │   └── forms/
-│   └── formats/             # Same page in each format
-│       ├── sifr/
-│       ├── html/
-│       ├── axtree/
-│       └── screenshots/
+        Benchmark Results: Combined (10 sites)
+┏━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┓
+┃ Format     ┃ Accuracy ┃ Tokens ┃ Latency ┃ Status ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━━┩
+│ sifr       │    64.6% │ 25,512 │  7,511ms│   ✅   │
+│ screenshot │    21.5% │ 37,765 │  8,039ms│   ⚠️   │
+│ html_raw   │     4.7% │ 32,879 │  8,332ms│   ⚠️   │
+│ axtree     │     3.0% │  5,289 │  1,876ms│   ⚠️   │
+└────────────┴──────────┴────────┴─────────┴────────┘
+```
+
+Status icons:
+- ✅ Success (accuracy ≥ 50%)
+- ⚠️ Warning (accuracy < 50%)
+- ❌ Failed (accuracy = 0%)
+
+## Run Directory Structure
+
+Each benchmark creates an isolated run:
+
+```
+benchmark_runs/run_20251206_182941/
+├── captures/
+│   ├── sifr/*.sifr
+│   ├── html/*.html
+│   ├── axtree/*.json
+│   └── screenshots/*.png
+├── ground-truth/*.json
 ├── results/
-│   ├── raw/                 # Model responses
-│   └── analysis/            # Processed results
-├── src/
-│   └── runner.js            # Benchmark execution
-└── examples/
-    └── product_page.sifr    # Sample SiFR file
+│   ├── raw_results.json
+│   └── summary.json
+└── run_meta.json
 ```
-
-## Tested Models
-
-- GPT-4o (OpenAI)
-- Claude 3.5 Sonnet (Anthropic)
-- Gemini 2.0 Flash (Google)
-- Llama 3.3 70B (Meta)
-- Qwen 2.5 72B (Alibaba)
 
 ## Key Findings
 
-1. **Token efficiency**: SiFR uses 70-80% fewer tokens than raw HTML
-2. **Accuracy**: Pre-computed salience improves task accuracy by 40%+
-3. **Consistency**: SiFR results have 3x lower variance across models
-4. **Edge-ready**: SiFR enables UI tasks on 3B parameter models
+1. **SiFR dominates complex sites** — 100% on GitHub/YouTube, 85%+ on Walmart/Reddit
+2. **Screenshots struggle with dense UI** — Can't reliably identify elements
+3. **Raw HTML is unusable** — Too large, no semantic structure for LLMs
+4. **AXTree IDs don't match** — Own ID scheme incompatible with ground truth
 
-## Contribute
+### Why IMDB Failed?
 
-- Add test pages: `datasets/pages/`
-- Add tasks: `benchmark/tasks.json`
-- Run on new models: `src/runner.js`
+IMDB has the largest DOM (706KB SiFR, 2171KB HTML). Truncation to 97KB removes critical elements. This highlights the need for smarter budgeting in the E2LLM extension.
+
+## Tested Models
+
+- GPT-4o-mini (default)
+- GPT-4o
+- Claude 3.5 Sonnet
+- Claude 3 Haiku
+
+## Contributing
+
+- **Add test sites**: Run benchmark on more URLs
+- **Improve ground truth**: Manual verification of tasks
+- **New models**: Add support in `models.py`
 
 ## Citation
 
 ```bibtex
-@misc{sifr2024,
-  title={SiFR: Structured Interface Format for AI Agents},
+@misc{sifr2025,
+  title={SiFR: Structured Interface Format for AI Web Agents},
   author={SiFR Contributors},
-  year={2024},
-  url={https://github.com/user/sifr-benchmark}
+  year={2025},
+  url={https://github.com/Alechko375/sifr-benchmark}
 }
 ```
 
 ## License
 
-MIT — format is open.
-
----
-
-**[SiFR Spec](https://github.com/user/sifr-spec)** | **[Extension](https://github.com/user/element-to-llm)** | **[Discord](#)**
+MIT
