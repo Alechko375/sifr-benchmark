@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
 
+# Default budget: 100KB (good balance of accuracy vs tokens)
+# Max recommended: 380KB (LLM context limit ~400KB)
+DEFAULT_TARGET_SIZE = 100 * 1024  # 100KB
+
 
 @dataclass
 class CaptureResult:
@@ -18,22 +22,30 @@ class CaptureResult:
     html: str
     axtree: dict
     screenshot: Optional[bytes] = None
+    sifr_meta: Optional[dict] = None  # E2LLM metadata
 
 
 async def capture_with_e2llm(
     page,
     selector: str = "body",
-    timeout: int = 30000
+    timeout: int = 30000,
+    target_size: int = DEFAULT_TARGET_SIZE
 ) -> dict:
     """
     Capture page using E2LLM extension CustomEvent API.
+    
+    Args:
+        page: Playwright page object
+        selector: CSS selector to capture (default: body)
+        timeout: Timeout in ms
+        target_size: Target SiFR size in bytes (default: 100KB)
     
     Returns:
         dict with sifr (stringified), html, axtree, metadata
     """
     
     result = await page.evaluate("""
-        ([selector, timeout]) => {
+        ([selector, timeout, targetSize]) => {
             return new Promise((resolve, reject) => {
                 const id = Date.now().toString();
                 
@@ -45,8 +57,6 @@ async def capture_with_e2llm(
                     if (e.detail && e.detail.requestId === id) {
                         clearTimeout(timer);
                         
-                        // E2LLM v2.6.x returns: {requestId, success, data, meta}
-                        // data contains the SiFR structure directly
                         const response = e.detail;
                         
                         if (response.success && response.data) {
@@ -69,12 +79,16 @@ async def capture_with_e2llm(
                 document.dispatchEvent(new CustomEvent('e2llm-capture-request', {
                     detail: { 
                         requestId: id, 
-                        selector: selector
+                        selector: selector,
+                        options: {
+                            fullPage: true,
+                            targetSize: targetSize
+                        }
                     }
                 }));
             });
         }
-    """, [selector, timeout])
+    """, [selector, timeout, target_size])
     
     return result
 
@@ -84,7 +98,8 @@ async def capture_page(
     extension_path: str,
     user_data_dir: str = "./e2llm-chrome-profile",
     headless: bool = False,
-    selector: str = "body"
+    selector: str = "body",
+    target_size: int = DEFAULT_TARGET_SIZE
 ) -> CaptureResult:
     """
     Capture a page using Playwright + E2LLM extension.
@@ -104,11 +119,10 @@ async def capture_page(
         page = await context.new_page()
         
         try:
-            # Use domcontentloaded - faster and more reliable for SPAs
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)  # Wait for JS to render
+            await page.wait_for_timeout(3000)
             
-            result = await capture_with_e2llm(page, selector)
+            result = await capture_with_e2llm(page, selector, target_size=target_size)
             screenshot = await page.screenshot(full_page=True)
             axtree = await page.accessibility.snapshot()
             
@@ -117,7 +131,8 @@ async def capture_page(
                 sifr=result.get("sifr", ""),
                 html=result.get("html", ""),
                 axtree=axtree or {},
-                screenshot=screenshot
+                screenshot=screenshot,
+                sifr_meta=result.get("meta")
             )
             
         finally:
@@ -128,10 +143,18 @@ async def capture_multiple(
     urls: list[str],
     extension_path: str,
     output_dir: str = "./datasets/formats",
-    user_data_dir: str = "./e2llm-chrome-profile"
+    user_data_dir: str = "./e2llm-chrome-profile",
+    target_size: int = DEFAULT_TARGET_SIZE
 ) -> list[CaptureResult]:
     """
     Capture multiple pages, saving to output directory.
+    
+    Args:
+        urls: List of URLs to capture
+        extension_path: Path to E2LLM extension
+        output_dir: Output directory for captures
+        user_data_dir: Chrome profile directory
+        target_size: Target SiFR size in bytes (default: 100KB)
     """
     from playwright.async_api import async_playwright
     
@@ -155,23 +178,21 @@ async def capture_multiple(
         
         page = await context.new_page()
         
+        # Log budget info
+        print(f"📦 SiFR budget: {target_size // 1024}KB")
+        
         for url in urls:
-            # Generate page_id BEFORE try block to avoid UnboundLocalError
             page_id = url.replace("https://", "").replace("http://", "")
             page_id = page_id.replace("/", "_").replace(".", "_").rstrip("_")
             
             try:
                 print(f"Capturing: {url}")
                 
-                # Use domcontentloaded instead of networkidle
-                # networkidle never fires on heavy SPAs like Amazon/YouTube
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(3000)  # Wait for JS to render + extension
+                await page.wait_for_timeout(3000)
                 
-                result = await capture_with_e2llm(page)
+                result = await capture_with_e2llm(page, target_size=target_size)
                 screenshot = await page.screenshot(full_page=True)
-                
-                # Get real accessibility tree via Playwright
                 axtree = await page.accessibility.snapshot()
                 
                 sifr_content = result.get("sifr", "")
@@ -195,17 +216,17 @@ async def capture_multiple(
                     sifr=sifr_content,
                     html=html_content,
                     axtree=axtree or {},
-                    screenshot=screenshot
+                    screenshot=screenshot,
+                    sifr_meta=result.get("meta")
                 ))
                 
                 sifr_size = len(sifr_content)
-                print(f"  ✅ Saved: {page_id} (SiFR: {sifr_size} bytes)")
+                print(f"  ✅ {page_id} (SiFR: {sifr_size // 1024}KB)")
                 
                 await page.wait_for_timeout(500)
                 
             except Exception as e:
                 print(f"  ❌ Error capturing {page_id}: {e}")
-                # Save empty files to avoid breaking pipeline
                 (output / "sifr" / f"{page_id}.sifr").write_text("", encoding="utf-8")
                 (output / "html" / f"{page_id}.html").write_text("", encoding="utf-8")
                 (output / "axtree" / f"{page_id}.json").write_text("{}", encoding="utf-8")
@@ -223,6 +244,12 @@ if __name__ == "__main__":
     parser.add_argument("--extension", "-e", required=True, help="Path to E2LLM extension")
     parser.add_argument("--output", "-o", default="./datasets/formats", help="Output directory")
     parser.add_argument("--profile", default="./e2llm-chrome-profile", help="Chrome profile dir")
+    parser.add_argument(
+        "--target-size", "-s", 
+        type=int, 
+        default=100,
+        help="Target SiFR size in KB (default: 100, max recommended: 380)"
+    )
     
     args = parser.parse_args()
     
@@ -230,5 +257,6 @@ if __name__ == "__main__":
         urls=args.urls,
         extension_path=args.extension,
         output_dir=args.output,
-        user_data_dir=args.profile
+        user_data_dir=args.profile,
+        target_size=args.target_size * 1024  # Convert KB to bytes
     ))
