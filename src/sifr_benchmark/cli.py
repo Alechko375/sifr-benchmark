@@ -13,10 +13,84 @@ import os
 from datetime import datetime
 
 from . import __version__
-from .runner import BenchmarkRunner
+from .runner import BenchmarkRunner, FormatResult, FailureReason, ALL_FORMATS
 from .formats import validate_sifr_file
 
 console = Console()
+
+# Status icons for output
+STATUS_ICONS = {
+    "success": "✅",
+    "warning": "⚠️",
+    "failed": "❌",
+    "skipped": "⏭️",
+}
+
+# Footnote templates
+FOOTNOTE_TEMPLATES = {
+    FailureReason.TRUNCATED: "SiFR truncated: {original_kb}KB → {truncated_kb}KB (E2LLM API bug)",
+    FailureReason.CONTEXT_EXCEEDED: "Exceeds context: {tokens:,} tokens > {limit:,} limit ({model})",
+    FailureReason.NOT_CAPTURED: "Not captured: E2LLM API doesn't provide {format}",
+    FailureReason.ID_MISMATCH: "ID mismatch: AXTree uses own IDs, incompatible with ground truth",
+    FailureReason.NO_VISION: "Model limitation: {model} doesn't support vision input",
+}
+
+
+def format_footnote(reason: FailureReason, details: dict, model: str) -> str:
+    """Format a footnote message based on failure reason."""
+    template = FOOTNOTE_TEMPLATES.get(reason, str(reason))
+    
+    # Add model to details if needed
+    details = details.copy()
+    details["model"] = model
+    
+    try:
+        return template.format(**details)
+    except KeyError:
+        return f"{reason.value}: {details}"
+
+
+def render_benchmark_results(site_name: str, results: list[FormatResult], model: str):
+    """Render benchmark results table with footnotes."""
+    table = Table(title=f"Benchmark Results: {site_name}")
+    
+    table.add_column("Format", style="cyan")
+    table.add_column("Accuracy", justify="right")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Latency", justify="right")
+    table.add_column("Status", justify="center")
+    
+    footnotes = []
+    footnote_idx = 1
+    
+    for r in results:
+        # Format values
+        if r.accuracy is not None:
+            acc = f"{r.accuracy * 100:.1f}%"
+        else:
+            acc = "—"
+        
+        tokens = f"{r.tokens:,}" if r.tokens else "—"
+        latency = f"{r.latency_ms:,}ms" if r.latency_ms else "—"
+        
+        # Status with footnote reference
+        if r.failure_reason:
+            status = f"{STATUS_ICONS[r.status]} [{footnote_idx}]"
+            footnotes.append((footnote_idx, r.failure_reason, r.failure_details))
+            footnote_idx += 1
+        else:
+            status = STATUS_ICONS[r.status]
+        
+        table.add_row(r.format_name, acc, tokens, latency, status)
+    
+    console.print(table)
+    
+    # Print footnotes
+    if footnotes:
+        console.print()
+        for idx, reason, details in footnotes:
+            msg = format_footnote(reason, details, model)
+            console.print(f"[dim][{idx}] {msg}[/dim]")
 
 
 def create_run_dir(base_path: str = "./benchmark_runs") -> Path:
@@ -24,9 +98,9 @@ def create_run_dir(base_path: str = "./benchmark_runs") -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path(base_path) / f"run_{timestamp}"
     
-    # Create subdirectories
     (run_dir / "captures" / "sifr").mkdir(parents=True, exist_ok=True)
     (run_dir / "captures" / "html").mkdir(parents=True, exist_ok=True)
+    (run_dir / "captures" / "html_clean").mkdir(parents=True, exist_ok=True)
     (run_dir / "captures" / "axtree").mkdir(parents=True, exist_ok=True)
     (run_dir / "captures" / "screenshots").mkdir(parents=True, exist_ok=True)
     (run_dir / "ground-truth").mkdir(parents=True, exist_ok=True)
@@ -44,8 +118,8 @@ def main():
 
 @main.command()
 @click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
-@click.option("--formats", "-f", default="sifr,html_raw,axtree", help="Formats to test")
-@click.option("--run-dir", "-d", required=True, type=click.Path(exists=True), help="Run directory with captures")
+@click.option("--formats", "-f", default=",".join(ALL_FORMATS), help="Formats to test")
+@click.option("--run-dir", "-d", required=True, type=click.Path(exists=True), help="Run directory")
 @click.option("--runs", "-r", default=1, type=int, help="Runs per test")
 def run(models, formats, run_dir, runs):
     """Run benchmark on existing captures."""
@@ -56,7 +130,6 @@ def run(models, formats, run_dir, runs):
     model_list = [m.strip() for m in models.split(",")]
     format_list = [f.strip() for f in formats.split(",")]
     
-    # Check API keys
     if any("gpt" in m for m in model_list) and not os.getenv("OPENAI_API_KEY"):
         console.print("[red]❌ OPENAI_API_KEY not set[/red]")
         return
@@ -79,24 +152,36 @@ def run(models, formats, run_dir, runs):
     
     summary = runner.aggregate(results)
     
-    # Display results
-    table = Table(title="Benchmark Results")
-    table.add_column("Format", style="cyan")
-    table.add_column("Accuracy", style="green")
-    table.add_column("Avg Tokens", style="yellow")
-    table.add_column("Avg Latency", style="blue")
+    # Get site name from run_meta or directory
+    meta_path = run_path / "run_meta.json"
+    site_name = run_path.name
+    if meta_path.exists():
+        with open(meta_path) as f:
+            meta = json.load(f)
+            if meta.get("urls"):
+                site_name = meta["urls"][0].replace("https://", "").replace("http://", "").split("/")[0]
     
-    for row in summary:
-        table.add_row(row["format"], row["accuracy"], str(row["avg_tokens"]), row["avg_latency"])
-    
-    console.print(table)
+    render_benchmark_results(site_name, summary, model_list[0])
     
     # Save results
-    with open(run_path / "results" / "raw_results.json", "w") as f:
+    raw_results_path = run_path / "results" / "raw_results.json"
+    with open(raw_results_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
     
+    summary_data = [
+        {
+            "format": r.format_name,
+            "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
+            "avg_tokens": r.tokens or 0,
+            "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
+            "status": r.status,
+            "failure_reason": r.failure_reason.value if r.failure_reason else None,
+        }
+        for r in summary
+    ]
+    
     with open(run_path / "results" / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary_data, f, indent=2)
     
     console.print(f"\n[green]✅ Results saved to {run_path}/results/[/green]")
 
@@ -117,12 +202,13 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir):
         console.print("[red]Error: playwright not installed[/red]")
         return
     
-    # Create isolated run directory
     run_dir = create_run_dir(base_dir)
+    model_list = [m.strip() for m in models.split(",")]
     
     console.print(f"[bold blue]🚀 Full Benchmark with E2LLM[/bold blue]")
     console.print(f"Run directory: [cyan]{run_dir}[/cyan]")
     console.print(f"URLs: {len(urls)}")
+    console.print(f"Formats: {', '.join(ALL_FORMATS)}")
     
     # Step 1: Capture
     console.print("\n[bold]Step 1/3: Capturing with E2LLM...[/bold]")
@@ -169,13 +255,12 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir):
         except Exception as e:
             console.print(f"  ⚠️ {page_id}: {e}")
     
-    # Step 3: Benchmark
+    # Step 3: Benchmark (all 5 formats)
     console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
-    model_list = [m.strip() for m in models.split(",")]
     
     runner = BenchmarkRunner(
         models=model_list,
-        formats=["sifr", "html_raw", "axtree"],
+        formats=ALL_FORMATS,
         runs=runs,
         base_dir=run_dir
     )
@@ -183,32 +268,39 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir):
     bench_results = runner.run()
     summary = runner.aggregate(bench_results)
     
-    # Display results
-    table = Table(title="Benchmark Results")
-    table.add_column("Format", style="cyan")
-    table.add_column("Accuracy", style="green")
-    table.add_column("Avg Tokens", style="yellow")
-    table.add_column("Avg Latency", style="blue")
+    # Get site name for display
+    site_name = urls[0].replace("https://", "").replace("http://", "").split("/")[0]
+    site_name = site_name.replace(".", "_")
     
-    for row in summary:
-        table.add_row(row["format"], row["accuracy"], str(row["avg_tokens"]), row["avg_latency"])
-    
-    console.print(table)
+    render_benchmark_results(site_name, summary, model_list[0])
     
     # Save results
     with open(run_dir / "results" / "raw_results.json", "w") as f:
         json.dump(bench_results, f, indent=2, default=str)
     
+    summary_data = [
+        {
+            "format": r.format_name,
+            "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
+            "avg_tokens": r.tokens or 0,
+            "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
+            "status": r.status,
+            "failure_reason": r.failure_reason.value if r.failure_reason else None,
+        }
+        for r in summary
+    ]
+    
     with open(run_dir / "results" / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary_data, f, indent=2)
     
     # Save run metadata
     metadata = {
         "timestamp": datetime.now().isoformat(),
         "urls": list(urls),
         "models": model_list,
-        "formats": ["sifr", "html_raw", "axtree"],
-        "pages": captured_pages
+        "formats": ALL_FORMATS,
+        "pages": captured_pages,
+        "version": __version__,
     }
     with open(run_dir / "run_meta.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -276,7 +368,13 @@ def compare(run_dirs):
                 meta = json.load(f)
         
         if summary:
-            best = max(summary, key=lambda x: float(x["accuracy"].rstrip("%") or 0))
+            # Filter out failed/skipped
+            valid = [s for s in summary if s.get("status", "success") == "success"]
+            if valid:
+                best = max(valid, key=lambda x: float(x["accuracy"].rstrip("%") or 0))
+            else:
+                best = summary[0]
+            
             table.add_row(
                 run_path.name,
                 meta.get("timestamp", "")[:10],
@@ -301,6 +399,7 @@ def list_runs():
     table.add_column("Run", style="cyan")
     table.add_column("Date", style="dim")
     table.add_column("URLs", style="yellow")
+    table.add_column("Formats", style="blue")
     table.add_column("Status", style="green")
     
     for run_dir in sorted(runs_dir.iterdir(), reverse=True):
@@ -316,11 +415,13 @@ def list_runs():
                 meta = json.load(f)
         
         status = "✅ Complete" if results_path.exists() else "⏳ Partial"
+        formats_count = len(meta.get("formats", []))
         
         table.add_row(
             run_dir.name,
             meta.get("timestamp", "")[:16].replace("T", " "),
             str(len(meta.get("urls", []))),
+            str(formats_count),
             status
         )
     
@@ -331,9 +432,11 @@ def list_runs():
 def info():
     """Show benchmark information."""
     console.print(f"\n[bold blue]SiFR Benchmark v{__version__}[/bold blue]\n")
-    console.print("""
+    console.print(f"""
 [bold]Quick Start:[/bold]
   sifr-bench full-benchmark-e2llm https://news.ycombinator.com -e /path/to/extension
+
+[bold]Formats tested:[/bold] {', '.join(ALL_FORMATS)}
 
 [bold]Commands:[/bold]
   full-benchmark-e2llm  Full pipeline (capture → ground truth → test)
@@ -341,11 +444,18 @@ def info():
   list-runs             Show all benchmark runs
   compare               Compare multiple runs
 
+[bold]Output format:[/bold]
+  ✅ — Success
+  ⚠️ — Warning (works with limitations)
+  ❌ — Failed (with reason)
+  ⏭️ — Skipped (not captured)
+
 [bold]Run Structure:[/bold]
   benchmark_runs/run_YYYYMMDD_HHMMSS/
   ├── captures/
   │   ├── sifr/
   │   ├── html/
+  │   ├── html_clean/
   │   ├── axtree/
   │   └── screenshots/
   ├── ground-truth/
