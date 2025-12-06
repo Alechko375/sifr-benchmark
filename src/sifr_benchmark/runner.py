@@ -10,7 +10,7 @@ from typing import Optional
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .models import query_model, SUPPORTED_MODELS
+from .models import query_model, SUPPORTED_MODELS, supports_vision
 from .scoring import score_response
 from .formats import load_format, FormatMeta
 
@@ -73,6 +73,21 @@ Respond in this exact format:
 ANSWER: [element ID]
 CONFIDENCE: [0-100]"""
 
+
+# Vision prompt template (for screenshot)
+VISION_PROMPT = """You are a web automation agent. Look at this screenshot of a webpage.
+
+TASK: {question}
+
+Rules:
+- Identify the UI element you would interact with
+- Return element ID if visible, otherwise describe the element briefly
+- If no element matches, respond with "none"
+
+Respond in this exact format:
+ANSWER: [element ID or brief description]
+CONFIDENCE: [0-100]"""
+
 # All supported formats
 ALL_FORMATS = ["sifr", "html_raw", "axtree", "screenshot"]
 
@@ -80,12 +95,9 @@ ALL_FORMATS = ["sifr", "html_raw", "axtree", "screenshot"]
 MODEL_CONTEXT_LIMITS = {
     "gpt-4o-mini": 128000,
     "gpt-4o": 128000,
-    "claude-3-sonnet": 200000,
-    "claude-3-haiku": 200000,
+    "claude-sonnet": 200000,
+    "claude-haiku": 200000,
 }
-
-# Models that support vision
-VISION_MODELS = {"gpt-4o", "gpt-4o-mini", "claude-3-sonnet", "claude-3-haiku"}
 
 
 class BenchmarkRunner:
@@ -197,15 +209,16 @@ class BenchmarkRunner:
     def _check_format_availability(self, format_name: str, page_id: str, model: str) -> Optional[FormatResult]:
         """Check if format is available and return FormatResult if it's not runnable."""
         
-        # Screenshot requires vision model
+        # Screenshot requires vision-capable model
         if format_name == "screenshot":
-            if model not in VISION_MODELS:
+            if not supports_vision(model):
                 return FormatResult(
                     format_name=format_name,
-                    status="failed",
+                    status="not_supported",
                     failure_reason=FailureReason.NO_VISION,
                     failure_details={"model": model}
                 )
+            # Check if screenshot file exists
             screenshot_path = self.base_dir / "captures" / "screenshots" / f"{page_id}.png"
             if not screenshot_path.exists():
                 return FormatResult(
@@ -230,6 +243,11 @@ class BenchmarkRunner:
         run_num: int,
     ) -> TestResult:
         """Run a single test."""
+        
+        # Handle screenshot format separately
+        if format_name == "screenshot":
+            return self._run_screenshot_test(model, page_id, task, run_num)
+        
         try:
             result = load_format(page_id, format_name, self.base_dir, return_meta=True)
             context, meta = result
@@ -323,6 +341,78 @@ class BenchmarkRunner:
             failure_reason=failure_reason,
             original_size=meta.original_size if was_truncated else None,
             truncated_size=meta.truncated_size if was_truncated else None,
+        )
+
+    def _run_screenshot_test(
+        self,
+        model: str,
+        page_id: str,
+        task: dict,
+        run_num: int,
+    ) -> TestResult:
+        """Run a screenshot (vision) test."""
+        from .formats import load_screenshot
+        
+        try:
+            screenshot_bytes, meta = load_screenshot(page_id, self.base_dir, return_meta=True)
+        except FileNotFoundError:
+            return TestResult(
+                model=model,
+                format="screenshot",
+                page_id=page_id,
+                task_id=task["id"],
+                run=run_num,
+                response="",
+                expected=task.get("answer", ""),
+                score=0.0,
+                confidence=0,
+                tokens=0,
+                latency_ms=0,
+                error="Screenshot not found",
+                failure_reason=FailureReason.NOT_CAPTURED,
+            )
+        
+        prompt = VISION_PROMPT.format(question=task["question"])
+        
+        start = time.time()
+        response_data = query_model(model, prompt, image=screenshot_bytes)
+        latency = int((time.time() - start) * 1000)
+        
+        if response_data.get("error"):
+            return TestResult(
+                model=model,
+                format="screenshot",
+                page_id=page_id,
+                task_id=task["id"],
+                run=run_num,
+                response="",
+                expected=task.get("answer", ""),
+                score=0.0,
+                confidence=0,
+                tokens=response_data.get("tokens", 0),
+                latency_ms=latency,
+                error=response_data["error"],
+            )
+        
+        parsed = self._parse_response(response_data["response"])
+        expected = task.get("answer", "")
+        element_text = task.get("element_text", "")
+        
+        # For vision, use element_text matching since model can't see IDs
+        score = score_response(parsed["answer"], expected, task.get("type", "action"), element_text)
+        
+        return TestResult(
+            model=model,
+            format="screenshot",
+            page_id=page_id,
+            task_id=task["id"],
+            run=run_num,
+            response=parsed["answer"],
+            expected=expected,
+            score=score,
+            confidence=parsed["confidence"],
+            tokens=response_data.get("tokens", 0),
+            latency_ms=latency,
         )
 
     def run(self) -> list[dict]:
@@ -440,6 +530,10 @@ class BenchmarkRunner:
                 if data["failure_reasons"]:
                     failure_reason = FailureReason(data["failure_reasons"][0])
                     failure_details["format"] = data["format"]
+            elif data.get("status") == "not_supported":
+                status = "not_supported"
+                if data["failure_reasons"]:
+                    failure_reason = FailureReason(data["failure_reasons"][0])
             elif data.get("status") == "failed":
                 status = "failed"
                 if data["failure_reasons"]:
@@ -455,14 +549,26 @@ class BenchmarkRunner:
                 elif "not found" in error_str.lower():
                     failure_reason = FailureReason.NOT_CAPTURED
                     failure_details["format"] = data["format"]
+                elif "vision" in error_str.lower() or "NO_VISION" in str(data["failure_reasons"]):
+                    failure_reason = FailureReason.NO_VISION
             elif scores:
                 avg_score = sum(scores) / len(scores)
-                if avg_score < 0.1 and data["format"] == "axtree":
-                    status = "failed"
-                    failure_reason = FailureReason.ID_MISMATCH
-                elif data["original_sizes"] and avg_score < 0.5:
+                
+                # Determine status based on accuracy
+                if avg_score >= 0.5:
+                    status = "success"
+                elif avg_score > 0:
                     status = "warning"
-                    failure_reason = FailureReason.TRUNCATED
+                    # Check if it was truncated
+                    if data["original_sizes"]:
+                        failure_reason = FailureReason.TRUNCATED
+                else:
+                    # 0% accuracy
+                    status = "failed"
+                    if data["format"] == "axtree":
+                        failure_reason = FailureReason.ID_MISMATCH
+                    elif data["original_sizes"]:
+                        failure_reason = FailureReason.TRUNCATED
 
             result = FormatResult(
                 format_name=data["format"],
