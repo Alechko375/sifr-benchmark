@@ -62,7 +62,7 @@ pip install sifr-benchmark
 ### Prerequisites
 
 1. **Element-to-LLM Chrome Extension** — captures pages in SiFR format
-   - [Chrome Web Store](https://chromewebstore.google.com/detail/element-to-llm/your-extension-id)
+   - [Chrome Web Store](https://chromewebstore.google.com/detail/element-to-llm-dom-captur/oofdfeinchhgnhlikkfdfcldbpcjcgnj)
    - Or load unpacked from `element-to-llm-chrome/`
 
 2. **API Keys**
