@@ -100,7 +100,6 @@ def create_run_dir(base_path: str = "./benchmark_runs") -> Path:
     
     (run_dir / "captures" / "sifr").mkdir(parents=True, exist_ok=True)
     (run_dir / "captures" / "html").mkdir(parents=True, exist_ok=True)
-    (run_dir / "captures" / "html_clean").mkdir(parents=True, exist_ok=True)
     (run_dir / "captures" / "axtree").mkdir(parents=True, exist_ok=True)
     (run_dir / "captures" / "screenshots").mkdir(parents=True, exist_ok=True)
     (run_dir / "ground-truth").mkdir(parents=True, exist_ok=True)
