@@ -4,6 +4,7 @@ Benchmark runner - executes agent tasks across models and formats.
 
 import json
 import time
+import re
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
@@ -11,7 +12,7 @@ from enum import Enum
 
 from .models import query_model, SUPPORTED_MODELS
 from .scoring import score_response
-from .formats import load_format
+from .formats import load_format, FormatMeta
 
 
 class FailureReason(Enum):
@@ -50,6 +51,8 @@ class TestResult:
     latency_ms: int
     error: Optional[str] = None
     failure_reason: Optional[FailureReason] = None
+    original_size: Optional[int] = None
+    truncated_size: Optional[int] = None
 
 
 # Agent-focused prompt template
@@ -239,7 +242,8 @@ class BenchmarkRunner:
     ) -> TestResult:
         """Run a single test."""
         try:
-            context, meta = load_format(page_id, format_name, self.base_dir, return_meta=True)
+            result = load_format(page_id, format_name, self.base_dir, return_meta=True)
+            context, meta = result
         except FileNotFoundError as e:
             return TestResult(
                 model=model,
@@ -257,10 +261,12 @@ class BenchmarkRunner:
                 failure_reason=FailureReason.NOT_CAPTURED,
             )
 
-        # Check context size
+        # Check context size (use original size for limit check)
+        original_tokens = meta.original_size // 4
         approx_tokens = len(context) // 4
         limit = MODEL_CONTEXT_LIMITS.get(model, 128000)
-        if approx_tokens > limit:
+        
+        if original_tokens > limit and not meta.was_truncated:
             return TestResult(
                 model=model,
                 format=format_name,
@@ -271,11 +277,14 @@ class BenchmarkRunner:
                 expected=task.get("answer", ""),
                 score=0.0,
                 confidence=0,
-                tokens=approx_tokens,
+                tokens=original_tokens,
                 latency_ms=0,
-                error=f"Context exceeds limit: {approx_tokens} > {limit}",
+                error=f"Context exceeds limit: {original_tokens} > {limit}",
                 failure_reason=FailureReason.CONTEXT_EXCEEDED,
             )
+        
+        # Track truncation for warnings
+        was_truncated = meta.was_truncated
 
         prompt = self._build_prompt(task, context, format_name)
         start = time.time()
@@ -307,6 +316,8 @@ class BenchmarkRunner:
         failure_reason = None
         if score == 0 and format_name == "axtree":
             failure_reason = FailureReason.ID_MISMATCH
+        elif was_truncated and score < 0.5:
+            failure_reason = FailureReason.TRUNCATED
 
         return TestResult(
             model=model,
@@ -321,6 +332,8 @@ class BenchmarkRunner:
             tokens=response_data.get("tokens", 0),
             latency_ms=latency,
             failure_reason=failure_reason,
+            original_size=meta.original_size if was_truncated else None,
+            truncated_size=meta.truncated_size if was_truncated else None,
         )
 
     def run(self) -> list[dict]:
@@ -396,6 +409,8 @@ class BenchmarkRunner:
                     "errors": [],
                     "failure_reasons": [],
                     "status": r.get("status", "success"),
+                    "original_sizes": [],
+                    "truncated_sizes": [],
                 }
 
             if r.get("error"):
@@ -406,6 +421,12 @@ class BenchmarkRunner:
                 agg[key]["scores"].append(r["score"])
                 agg[key]["tokens"].append(r["tokens"])
                 agg[key]["latencies"].append(r["latency_ms"])
+            
+            # Track truncation info
+            if r.get("original_size"):
+                agg[key]["original_sizes"].append(r["original_size"])
+            if r.get("truncated_size"):
+                agg[key]["truncated_sizes"].append(r["truncated_size"])
 
         summary = []
         for data in agg.values():
@@ -418,30 +439,41 @@ class BenchmarkRunner:
             failure_reason = None
             failure_details = {}
             
+            # Check for truncation
+            if data["original_sizes"] and data["truncated_sizes"]:
+                avg_original = sum(data["original_sizes"]) // len(data["original_sizes"])
+                avg_truncated = sum(data["truncated_sizes"]) // len(data["truncated_sizes"])
+                failure_details["original_kb"] = avg_original // 1024
+                failure_details["truncated_kb"] = avg_truncated // 1024
+            
             if data.get("status") == "skipped":
                 status = "skipped"
                 if data["failure_reasons"]:
                     failure_reason = FailureReason(data["failure_reasons"][0])
+                    failure_details["format"] = data["format"]
             elif data.get("status") == "failed":
                 status = "failed"
                 if data["failure_reasons"]:
                     failure_reason = FailureReason(data["failure_reasons"][0])
             elif not scores and data["errors"]:
                 status = "failed"
-                # Determine failure reason from errors
                 error_str = data["errors"][0] if data["errors"] else ""
                 if "Context exceeds" in error_str:
                     failure_reason = FailureReason.CONTEXT_EXCEEDED
-                    # Extract token count from error
-                    import re
                     match = re.search(r'(\d+) > (\d+)', error_str)
                     if match:
                         failure_details = {"tokens": int(match.group(1)), "limit": int(match.group(2))}
                 elif "not found" in error_str.lower():
                     failure_reason = FailureReason.NOT_CAPTURED
-            elif scores and sum(scores) / len(scores) < 0.1 and data["format"] == "axtree":
-                status = "failed"
-                failure_reason = FailureReason.ID_MISMATCH
+                    failure_details["format"] = data["format"]
+            elif scores:
+                avg_score = sum(scores) / len(scores)
+                if avg_score < 0.1 and data["format"] == "axtree":
+                    status = "failed"
+                    failure_reason = FailureReason.ID_MISMATCH
+                elif data["original_sizes"] and avg_score < 0.5:
+                    status = "warning"
+                    failure_reason = FailureReason.TRUNCATED
 
             result = FormatResult(
                 format_name=data["format"],
