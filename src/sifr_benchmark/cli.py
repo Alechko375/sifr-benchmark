@@ -687,6 +687,7 @@ async def run_compound_benchmark(
     from .verification import SiFRResolver, verify_response
     from .models import query_model
     from .formats import load_format
+    from .scoring import score_compound_task
     
     results = []
     
@@ -723,11 +724,17 @@ async def run_compound_benchmark(
                 console.print(f"    ❌ Failed to load: {e}")
                 continue
             
-            # Load resolver
+            # Load resolver and page data
             sifr_path = run_dir / "captures" / "sifr" / f"{page_id}.sifr"
             sifr_resolver = None
+            page_data = None
             if sifr_path.exists():
-                sifr_resolver = SiFRResolver(sifr_path.read_text(encoding='utf-8'))
+                sifr_content = sifr_path.read_text(encoding='utf-8')
+                sifr_resolver = SiFRResolver(sifr_content)
+                try:
+                    page_data = json.loads(sifr_content)
+                except:
+                    page_data = None
             
             screenshot_path = run_dir / "captures" / "screenshots" / f"{page_id}.png"
             
@@ -814,8 +821,15 @@ async def run_compound_benchmark(
                             })
                             continue
                         
-                        # Check understand correctness
-                        understand_correct = expected_answer.lower() in understand_response.lower()
+                        # Check understand correctness with semantic scoring
+                        scoring_result = score_compound_task(
+                            understand_response, 
+                            False,  # act_success will be updated later
+                            task,
+                            page_data
+                        )
+                        understand_correct = scoring_result["understand_correct"]
+                        understand_reason = scoring_result.get("understand_reason", "")
                         
                         # Step 2: ACT (only if understand was attempted)
                         action_prompt = ACTION_PROMPTS.get(fmt, ACTION_PROMPTS["html_raw"])
@@ -891,6 +905,7 @@ async def run_compound_benchmark(
                             "understand_response": understand_response,
                             "understand_expected": expected_answer,
                             "understand_correct": understand_correct,
+                            "understand_reason": understand_reason,
                             "act_question": action_question,
                             "act_response": act_response,
                             "act_target": target_text,
@@ -907,7 +922,8 @@ async def run_compound_benchmark(
                         if verbose:
                             u_icon = "✅" if understand_correct else "❌"
                             a_icon = "✅" if act_success else "❌"
-                            console.print(f"    [{fmt}] {task_id}: U{u_icon} A{a_icon} | {understand_response[:25]}...")
+                            reason_short = understand_reason[:20] + "..." if len(understand_reason) > 20 else understand_reason
+                            console.print(f"    [{fmt}] {task_id}: U{u_icon} A{a_icon} | {understand_response[:20]}... ({reason_short})")
         
         await context.close()
     
