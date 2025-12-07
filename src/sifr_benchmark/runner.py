@@ -65,12 +65,13 @@ The webpage is described below in {format_name} format:
 TASK: {question}
 
 Rules:
-- Return ONLY the element ID (like btn001, lnk007, inp001)
-- If multiple elements match, return the most relevant one
+- Find the element that matches the task
+- Return the element ID if available (like btn001, lnk007, inp001)
+- OR return the exact text/label of the element
 - If no element matches, respond with "none"
 
 Respond in this exact format:
-ANSWER: [element ID]
+ANSWER: [element ID or element text]
 CONFIDENCE: [0-100]"""
 
 
