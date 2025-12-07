@@ -526,7 +526,7 @@ async def run_execution_benchmark(
 ) -> list[dict]:
     """Run execution-based benchmark with Playwright verification."""
     from playwright.async_api import async_playwright
-    from .verification import SiFRResolver, resolve_to_locator
+    from .verification import SiFRResolver, verify_response
     from .models import query_model
     from .formats import load_format
     
@@ -616,30 +616,10 @@ async def run_execution_benchmark(
                         # Clean response
                         response_clean = response.strip().strip('"').strip("'")
                         
-                        # Resolve to locator and verify
-                        success = False
-                        error = None
-                        resolved_selector = None
-                        
-                        try:
-                            locator, resolved_selector = await resolve_to_locator(
-                                page, response_clean, fmt, sifr_resolver
-                            )
-                            
-                            if locator:
-                                # Try to interact with element
-                                if task_type == "action_click":
-                                    await locator.click(trial=True, timeout=3000)
-                                    success = True
-                                elif task_type == "action_input":
-                                    await locator.fill("test", timeout=3000)
-                                    success = True
-                                else:
-                                    # Just check visibility
-                                    await locator.wait_for(state="visible", timeout=3000)
-                                    success = True
-                        except Exception as e:
-                            error = str(e)[:100]
+                        # Verify response using Playwright
+                        success, resolved_selector, error = await verify_response(
+                            page, response_clean, fmt, sifr_resolver
+                        )
                         
                         result = {
                             "page_id": page_id,
