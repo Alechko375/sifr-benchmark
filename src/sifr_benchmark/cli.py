@@ -11,6 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 import json
 import os
 from datetime import datetime
+from collections import defaultdict
 
 from . import __version__
 from .runner import BenchmarkRunner, FormatResult, FailureReason, ALL_FORMATS
@@ -69,8 +70,10 @@ def render_ground_truth_summary(gt_path: Path, verbose: bool = False):
             console.print(f"    • {q}... → [cyan]{a}[/cyan] ({text})")
 
 
-def render_errors(results: list[dict], format_name: str, verbose: bool = False):
+def render_errors(results: list[dict], format_name: str, model: str = None, verbose: bool = False):
     format_results = [r for r in results if r.get("format") == format_name]
+    if model:
+        format_results = [r for r in format_results if r.get("model") == model]
     if not format_results:
         return
     if all(r.get("error") for r in format_results):
@@ -99,13 +102,37 @@ def render_errors(results: list[dict], format_name: str, verbose: bool = False):
 
 
 def aggregate_by_page(results: list[dict], runner: BenchmarkRunner) -> dict[str, list[FormatResult]]:
-    from collections import defaultdict
     by_page = defaultdict(list)
     for r in results:
         by_page[r["page_id"]].append(r)
     aggregated = {}
     for page_id, page_results in by_page.items():
         aggregated[page_id] = runner.aggregate(page_results)
+    return aggregated
+
+
+def aggregate_by_model(results: list[dict], runner: BenchmarkRunner) -> dict[str, list[FormatResult]]:
+    """Group and aggregate results by model."""
+    by_model = defaultdict(list)
+    for r in results:
+        by_model[r.get("model", "unknown")].append(r)
+    aggregated = {}
+    for model, model_results in by_model.items():
+        aggregated[model] = runner.aggregate(model_results)
+    return aggregated
+
+
+def aggregate_by_page_and_model(results: list[dict], runner: BenchmarkRunner) -> dict[str, dict[str, list[FormatResult]]]:
+    """Group results by page, then by model."""
+    by_page = defaultdict(lambda: defaultdict(list))
+    for r in results:
+        by_page[r["page_id"]][r.get("model", "unknown")].append(r)
+    
+    aggregated = {}
+    for page_id, models in by_page.items():
+        aggregated[page_id] = {}
+        for model, model_results in models.items():
+            aggregated[page_id][model] = runner.aggregate(model_results)
     return aggregated
 
 
@@ -141,6 +168,48 @@ def render_benchmark_results(site_name: str, results: list[FormatResult], model:
             console.print(f"[dim][{idx}] {msg}[/dim]")
 
 
+def render_multi_model_results(site_name: str, results_by_model: dict[str, list[FormatResult]]):
+    """Render results with model comparison."""
+    # Get all formats
+    all_formats = set()
+    for model_results in results_by_model.values():
+        for r in model_results:
+            all_formats.add(r.format_name)
+    
+    models = list(results_by_model.keys())
+    
+    table = Table(title=f"Benchmark Results: {site_name}")
+    table.add_column("Format", style="cyan")
+    for model in models:
+        table.add_column(model, justify="right")
+    
+    # Build format -> model -> accuracy map
+    format_data = {}
+    for model, model_results in results_by_model.items():
+        for r in model_results:
+            if r.format_name not in format_data:
+                format_data[r.format_name] = {}
+            acc = f"{r.accuracy * 100:.1f}%" if r.accuracy is not None else "—"
+            format_data[r.format_name][model] = acc
+    
+    # Sort by first model's accuracy
+    def sort_key(fmt):
+        first_model = models[0]
+        acc_str = format_data.get(fmt, {}).get(first_model, "0%")
+        try:
+            return -float(acc_str.rstrip("%"))
+        except:
+            return 0
+    
+    for fmt in sorted(format_data.keys(), key=sort_key):
+        row = [fmt]
+        for model in models:
+            row.append(format_data[fmt].get(model, "—"))
+        table.add_row(*row)
+    
+    console.print(table)
+
+
 def create_run_dir(base_path: str = "./benchmark_runs") -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path(base_path) / f"run_{timestamp}"
@@ -161,7 +230,7 @@ def main():
 
 
 @main.command()
-@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
+@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test (comma-separated)")
 @click.option("--formats", "-f", default=",".join(ALL_FORMATS), help="Formats to test")
 @click.option("--run-dir", "-d", required=True, type=click.Path(exists=True), help="Run directory")
 @click.option("--runs", "-r", default=1, type=int, help="Runs per test")
@@ -194,40 +263,23 @@ def run(models, formats, run_dir, runs, target_size):
         results = runner.run()
         progress.update(task, completed=True)
     
-    summary = runner.aggregate(results)
-    meta_path = run_path / "run_meta.json"
-    site_name = run_path.name
-    if meta_path.exists():
-        with open(meta_path) as f:
-            meta = json.load(f)
-            if meta.get("urls"):
-                site_name = meta["urls"][0].replace("https://", "").replace("http://", "").split("/")[0]
-    
-    render_benchmark_results(site_name, summary, model_list[0])
+    # Multi-model output
+    if len(model_list) > 1:
+        by_model = aggregate_by_model(results, runner)
+        render_multi_model_results("All Sites", by_model)
+    else:
+        summary = runner.aggregate(results)
+        render_benchmark_results("All Sites", summary, model_list[0])
     
     with open(run_path / "results" / "raw_results.json", "w") as f:
         json.dump(results, f, indent=2, default=str)
-    
-    summary_data = [
-        {
-            "format": r.format_name,
-            "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
-            "avg_tokens": r.tokens or 0,
-            "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
-            "status": r.status,
-            "failure_reason": r.failure_reason.value if r.failure_reason else None,
-        }
-        for r in summary
-    ]
-    with open(run_path / "results" / "summary.json", "w") as f:
-        json.dump(summary_data, f, indent=2)
     console.print(f"\n[green]✅ Results saved to {run_path}/results/[/green]")
 
 
 @main.command()
 @click.argument("urls", nargs=-1, required=True)
 @click.option("--extension", "-e", required=True, help="Path to E2LLM extension")
-@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test")
+@click.option("--models", "-m", default="gpt-4o-mini", help="Models to test (comma-separated)")
 @click.option("--runs", "-r", default=1, type=int, help="Runs per test")
 @click.option("--base-dir", "-b", default="./benchmark_runs", help="Base directory for runs")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
@@ -244,10 +296,12 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
     run_dir = create_run_dir(base_dir)
     model_list = [m.strip() for m in models.split(",")]
     target_size_bytes = target_size * 1024
+    multi_model = len(model_list) > 1
     
     console.print(f"[bold blue]🚀 Full Benchmark with E2LLM[/bold blue]")
     console.print(f"Run directory: [cyan]{run_dir}[/cyan]")
     console.print(f"URLs: {len(urls)}")
+    console.print(f"Models: [yellow]{', '.join(model_list)}[/yellow]")
     console.print(f"Formats: {', '.join(ALL_FORMATS)}")
     console.print(f"Budget (all formats): [yellow]{target_size}KB[/yellow]")
     
@@ -302,40 +356,70 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
     )
     bench_results = runner.run()
     
-    by_page = aggregate_by_page(bench_results, runner)
-    all_summaries = []
-    for page_id, summary in by_page.items():
-        site_name = page_id.replace("_", ".")
-        page_results = [r for r in bench_results if r.get("page_id") == page_id]
-        console.print(f"\n[bold]{site_name}[/bold]")
-        for fmt in ALL_FORMATS:
-            render_errors(page_results, fmt, verbose)
-        render_benchmark_results(site_name, summary, model_list[0])
-        console.print()
-        all_summaries.extend(summary)
+    if multi_model:
+        # Multi-model: show comparison tables
+        by_page_model = aggregate_by_page_and_model(bench_results, runner)
+        
+        for page_id, models_data in by_page_model.items():
+            site_name = page_id.replace("_", ".")
+            console.print(f"\n[bold]{site_name}[/bold]")
+            render_multi_model_results(site_name, models_data)
+            console.print()
+        
+        # Combined across all pages
+        if len(by_page_model) > 1:
+            by_model = aggregate_by_model(bench_results, runner)
+            render_multi_model_results(f"Combined ({len(by_page_model)} sites)", by_model)
+    else:
+        # Single model: original behavior
+        by_page = aggregate_by_page(bench_results, runner)
+        for page_id, summary in by_page.items():
+            site_name = page_id.replace("_", ".")
+            page_results = [r for r in bench_results if r.get("page_id") == page_id]
+            console.print(f"\n[bold]{site_name}[/bold]")
+            for fmt in ALL_FORMATS:
+                render_errors(page_results, fmt, verbose=verbose)
+            render_benchmark_results(site_name, summary, model_list[0])
+            console.print()
+        
+        if len(by_page) > 1:
+            combined = runner.aggregate(bench_results)
+            render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
     
-    if len(by_page) > 1:
-        combined = runner.aggregate(bench_results)
-        render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
-    
+    # Save results
     with open(run_dir / "results" / "raw_results.json", "w") as f:
         json.dump(bench_results, f, indent=2, default=str)
     
-    summary_by_page = {}
-    for page_id, summary in by_page.items():
-        summary_by_page[page_id] = [
+    # Save summary with model info
+    if multi_model:
+        by_model = aggregate_by_model(bench_results, runner)
+        summary_data = {}
+        for model, model_results in by_model.items():
+            summary_data[model] = [
+                {
+                    "format": r.format_name,
+                    "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
+                    "avg_tokens": r.tokens or 0,
+                    "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
+                    "status": r.status,
+                }
+                for r in model_results
+            ]
+    else:
+        summary = runner.aggregate(bench_results)
+        summary_data = [
             {
                 "format": r.format_name,
                 "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
                 "avg_tokens": r.tokens or 0,
                 "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
                 "status": r.status,
-                "failure_reason": r.failure_reason.value if r.failure_reason else None,
             }
             for r in summary
         ]
+    
     with open(run_dir / "results" / "summary.json", "w") as f:
-        json.dump(summary_by_page, f, indent=2)
+        json.dump(summary_data, f, indent=2)
     
     metadata = {
         "timestamp": datetime.now().isoformat(),
@@ -387,8 +471,8 @@ def compare(run_dirs):
     table = Table(title="Run Comparison")
     table.add_column("Run", style="cyan")
     table.add_column("Date", style="dim")
-    table.add_column("Pages", style="yellow")
-    table.add_column("Budget", style="blue")
+    table.add_column("Models", style="yellow")
+    table.add_column("Pages", style="blue")
     table.add_column("Best Format", style="green")
     table.add_column("Accuracy", style="magenta")
     for d in run_dirs:
@@ -403,11 +487,17 @@ def compare(run_dirs):
         if meta_path.exists():
             with open(meta_path) as f:
                 meta = json.load(f)
-        if summary:
-            valid = [s for s in summary if s.get("status", "success") == "success"]
-            best = max(valid, key=lambda x: float(x["accuracy"].rstrip("%") or 0)) if valid else summary[0]
-            budget = f"{meta.get('target_size_kb', '?')}KB"
-            table.add_row(run_path.name, meta.get("timestamp", "")[:10], str(len(meta.get("pages", []))), budget, best["format"], best["accuracy"])
+        models_str = ",".join(meta.get("models", ["?"]))
+        if isinstance(summary, dict):
+            # Multi-model format
+            first_model = list(summary.keys())[0]
+            model_summary = summary[first_model]
+        else:
+            model_summary = summary
+        if model_summary:
+            valid = [s for s in model_summary if s.get("status", "success") == "success"]
+            best = max(valid, key=lambda x: float(x["accuracy"].rstrip("%") or 0)) if valid else model_summary[0]
+            table.add_row(run_path.name, meta.get("timestamp", "")[:10], models_str, str(len(meta.get("pages", []))), best["format"], best["accuracy"])
     console.print(table)
 
 
@@ -421,8 +511,8 @@ def list_runs():
     table = Table(title="Benchmark Runs")
     table.add_column("Run", style="cyan")
     table.add_column("Date", style="dim")
-    table.add_column("URLs", style="yellow")
-    table.add_column("Budget", style="blue")
+    table.add_column("Models", style="yellow")
+    table.add_column("URLs", style="blue")
     table.add_column("Status", style="green")
     for run_dir in sorted(runs_dir.iterdir(), reverse=True):
         if not run_dir.is_dir():
@@ -434,8 +524,8 @@ def list_runs():
             with open(meta_path) as f:
                 meta = json.load(f)
         status = "✅ Complete" if results_path.exists() else "⏳ Partial"
-        budget = f"{meta.get('target_size_kb', '?')}KB"
-        table.add_row(run_dir.name, meta.get("timestamp", "")[:16].replace("T", " "), str(len(meta.get("urls", []))), budget, status)
+        models_str = ",".join(meta.get("models", ["?"]))
+        table.add_row(run_dir.name, meta.get("timestamp", "")[:16].replace("T", " "), models_str, str(len(meta.get("urls", []))), status)
     console.print(table)
 
 
@@ -447,6 +537,9 @@ def info():
 [bold]Quick Start:[/bold]
   sifr-bench full-benchmark-e2llm https://example.com -e /path/to/extension
 
+[bold]Multi-model comparison:[/bold]
+  sifr-bench full-benchmark-e2llm https://example.com -e /path/to/ext -m gpt-4o-mini,claude-haiku
+
 [bold]Formats tested:[/bold] {', '.join(ALL_FORMATS)}
 
 [bold]Commands:[/bold]
@@ -457,20 +550,14 @@ def info():
 
 [bold]Options:[/bold]
   -v, --verbose         Show detailed output
-  -m, --models          Models to test (default: gpt-4o-mini)
+  -m, --models          Models to test (comma-separated, default: gpt-4o-mini)
   -r, --runs            Number of runs per test (default: 1)
   -s, --target-size     Budget in KB for ALL formats (default: {DEFAULT_TARGET_SIZE_KB})
-
-[bold]Budget applies to ALL formats equally:[/bold]
-  SiFR, HTML, AXTree all get the same token budget.
-  This ensures fair comparison.
 
 [bold]Output format:[/bold]
   ✅ — Success (accuracy >= 50%)
   ⚠️  — Warning (accuracy < 50%)
   ❌ — Failed (accuracy = 0%)
-  🚫 — Not supported by model
-  ⏭️  — Skipped (not captured)
 """)
 
 
