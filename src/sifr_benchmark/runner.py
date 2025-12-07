@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .models import query_model, SUPPORTED_MODELS, supports_vision
 from .scoring import score_response
@@ -31,7 +32,7 @@ class FormatResult:
     accuracy: Optional[float] = None
     tokens: Optional[int] = None
     latency_ms: Optional[int] = None
-    status: str = "success"  # "success", "warning", "failed", "skipped"
+    status: str = "success"
     failure_reason: Optional[FailureReason] = None
     failure_details: dict = field(default_factory=dict)
 
@@ -55,7 +56,6 @@ class TestResult:
     truncated_size: Optional[int] = None
 
 
-# Agent-focused prompt template
 AGENT_PROMPT = """You are a web automation agent. You need to identify which UI element to interact with.
 
 The webpage is described below in {format_name} format:
@@ -74,7 +74,6 @@ ANSWER: [element ID]
 CONFIDENCE: [0-100]"""
 
 
-# Vision prompt template (for screenshot)
 VISION_PROMPT = """You are a web automation agent. Look at this screenshot of a webpage.
 
 TASK: {question}
@@ -88,16 +87,18 @@ Respond in this exact format:
 ANSWER: [element ID or brief description]
 CONFIDENCE: [0-100]"""
 
-# All supported formats
 ALL_FORMATS = ["sifr", "html_raw", "axtree", "screenshot"]
 
-# Model context limits (tokens)
 MODEL_CONTEXT_LIMITS = {
     "gpt-4o-mini": 128000,
     "gpt-4o": 128000,
     "claude-sonnet": 200000,
     "claude-haiku": 200000,
 }
+
+# Parallel execution settings
+MAX_WORKERS_PER_PROVIDER = 3  # Avoid rate limits
+MAX_TOTAL_WORKERS = 8
 
 
 class BenchmarkRunner:
@@ -111,6 +112,7 @@ class BenchmarkRunner:
         runs: int = 1,
         base_dir: Optional[Path] = None,
         max_chars: int = DEFAULT_MAX_CHARS,
+        parallel: bool = True,  # NEW: enable/disable parallelism
     ):
         self.models = models
         self.formats = formats
@@ -118,6 +120,7 @@ class BenchmarkRunner:
         self.runs = runs
         self.base_dir = Path(base_dir) if base_dir else Path(".")
         self.max_chars = max_chars
+        self.parallel = parallel
         self._validate_config()
 
     def _validate_config(self):
@@ -200,7 +203,6 @@ class BenchmarkRunner:
                     pass
 
         if not result["answer"]:
-            import re
             ids = re.findall(r'\b([a-z]{2,4}\d{2,4})\b', raw.lower())
             if ids:
                 result["answer"] = ids[0]
@@ -211,7 +213,6 @@ class BenchmarkRunner:
     def _check_format_availability(self, format_name: str, page_id: str, model: str) -> Optional[FormatResult]:
         """Check if format is available and return FormatResult if it's not runnable."""
         
-        # Screenshot requires vision-capable model
         if format_name == "screenshot":
             if not supports_vision(model):
                 return FormatResult(
@@ -220,7 +221,6 @@ class BenchmarkRunner:
                     failure_reason=FailureReason.NO_VISION,
                     failure_details={"model": model}
                 )
-            # Check if screenshot file exists
             screenshot_path = self.base_dir / "captures" / "screenshots" / f"{page_id}.png"
             if not screenshot_path.exists():
                 return FormatResult(
@@ -230,11 +230,10 @@ class BenchmarkRunner:
                     failure_details={"format": "screenshot"}
                 )
         
-        # AXTree has ID mismatch issue
         if format_name == "axtree":
-            return None  # Let it run, but we'll mark it in results
+            return None
         
-        return None  # Format is available
+        return None
 
     def run_single(
         self,
@@ -246,7 +245,6 @@ class BenchmarkRunner:
     ) -> TestResult:
         """Run a single test."""
         
-        # Handle screenshot format separately
         if format_name == "screenshot":
             return self._run_screenshot_test(model, page_id, task, run_num)
         
@@ -276,7 +274,6 @@ class BenchmarkRunner:
                 failure_reason=FailureReason.NOT_CAPTURED,
             )
 
-        # Check context size (use original size for limit check)
         original_tokens = meta.original_size // 4
         approx_tokens = len(context) // 4
         limit = MODEL_CONTEXT_LIMITS.get(model, 128000)
@@ -298,7 +295,6 @@ class BenchmarkRunner:
                 failure_reason=FailureReason.CONTEXT_EXCEEDED,
             )
         
-        # Track truncation for warnings
         was_truncated = meta.was_truncated
 
         prompt = self._build_prompt(task, context, format_name)
@@ -327,7 +323,6 @@ class BenchmarkRunner:
         element_text = task.get("element_text", "")
         score = score_response(parsed["answer"], expected, task.get("type", "action"), element_text)
 
-        # Determine failure reason for low scores
         failure_reason = None
         if score == 0 and format_name == "axtree":
             failure_reason = FailureReason.ID_MISMATCH
@@ -406,7 +401,6 @@ class BenchmarkRunner:
         expected = task.get("answer", "")
         element_text = task.get("element_text", "")
         
-        # For vision, use element_text matching since model can't see IDs
         score = score_response(parsed["answer"], expected, task.get("type", "action"), element_text)
         
         return TestResult(
@@ -423,14 +417,27 @@ class BenchmarkRunner:
             latency_ms=latency,
         )
 
-    def run(self) -> list[dict]:
-        """Run full benchmark."""
+    def _run_single_task_wrapper(self, args: tuple) -> dict:
+        """Wrapper for parallel execution."""
+        model, format_name, page_id, task, run_num = args
+        result = self.run_single(model, format_name, page_id, task, run_num)
+        result_dict = result.__dict__.copy()
+        if result.failure_reason:
+            result_dict["failure_reason"] = result.failure_reason.value
+        return result_dict
+
+    def run(self, progress_callback=None) -> list[dict]:
+        """Run full benchmark with parallel execution."""
         pages = self._discover_pages()
         results = []
 
         if not pages:
             print("No pages found for benchmark")
             return results
+
+        # Build task queue
+        task_queue = []
+        skipped_results = []
 
         for page_id in pages:
             ground_truth = self._load_ground_truth(page_id)
@@ -445,8 +452,7 @@ class BenchmarkRunner:
                     # Check format availability
                     unavailable = self._check_format_availability(format_name, page_id, model)
                     if unavailable:
-                        # Add placeholder result for skipped format
-                        results.append({
+                        skipped_results.append({
                             "model": model,
                             "format": format_name,
                             "page_id": page_id,
@@ -466,18 +472,64 @@ class BenchmarkRunner:
 
                     for task in tasks:
                         for run_num in range(1, self.runs + 1):
-                            result = self.run_single(
-                                model=model,
-                                format_name=format_name,
-                                page_id=page_id,
-                                task=task,
-                                run_num=run_num,
-                            )
-                            result_dict = result.__dict__.copy()
-                            if result.failure_reason:
-                                result_dict["failure_reason"] = result.failure_reason.value
-                            results.append(result_dict)
-                            time.sleep(0.3)
+                            task_queue.append((model, format_name, page_id, task, run_num))
+
+        results.extend(skipped_results)
+
+        if not task_queue:
+            return results
+
+        total_tasks = len(task_queue)
+        completed = 0
+
+        if self.parallel and total_tasks > 1:
+            # Parallel execution
+            # Group by provider to respect rate limits
+            openai_tasks = [t for t in task_queue if t[0].startswith("gpt")]
+            anthropic_tasks = [t for t in task_queue if t[0].startswith("claude")]
+            
+            # Calculate workers per provider
+            num_workers = min(MAX_TOTAL_WORKERS, total_tasks)
+            
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {
+                    executor.submit(self._run_single_task_wrapper, task): task 
+                    for task in task_queue
+                }
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        completed += 1
+                        if progress_callback:
+                            progress_callback(completed, total_tasks)
+                    except Exception as e:
+                        task = futures[future]
+                        results.append({
+                            "model": task[0],
+                            "format": task[1],
+                            "page_id": task[2],
+                            "task_id": task[3]["id"],
+                            "run": task[4],
+                            "response": "",
+                            "expected": "",
+                            "score": 0.0,
+                            "confidence": 0,
+                            "tokens": 0,
+                            "latency_ms": 0,
+                            "error": str(e),
+                        })
+                        completed += 1
+        else:
+            # Sequential execution (fallback)
+            for task_args in task_queue:
+                result = self._run_single_task_wrapper(task_args)
+                results.append(result)
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total_tasks)
+                time.sleep(0.1)  # Reduced from 0.3
 
         return results
 
@@ -509,7 +561,6 @@ class BenchmarkRunner:
                 agg[key]["tokens"].append(r["tokens"])
                 agg[key]["latencies"].append(r["latency_ms"])
             
-            # Track truncation info
             if r.get("original_size"):
                 agg[key]["original_sizes"].append(r["original_size"])
             if r.get("truncated_size"):
@@ -521,12 +572,10 @@ class BenchmarkRunner:
             tokens = data["tokens"]
             latencies = data["latencies"]
             
-            # Determine status and failure reason
             status = "success"
             failure_reason = None
             failure_details = {}
             
-            # Check for truncation
             if data["original_sizes"] and data["truncated_sizes"]:
                 avg_original = sum(data["original_sizes"]) // len(data["original_sizes"])
                 avg_truncated = sum(data["truncated_sizes"]) // len(data["truncated_sizes"])
@@ -562,16 +611,13 @@ class BenchmarkRunner:
             elif scores:
                 avg_score = sum(scores) / len(scores)
                 
-                # Determine status based on accuracy
                 if avg_score >= 0.5:
                     status = "success"
                 elif avg_score > 0:
                     status = "warning"
-                    # Check if it was truncated
                     if data["original_sizes"]:
                         failure_reason = FailureReason.TRUNCATED
                 else:
-                    # 0% accuracy
                     status = "failed"
                     if data["format"] == "axtree":
                         failure_reason = FailureReason.ID_MISMATCH
@@ -589,5 +635,4 @@ class BenchmarkRunner:
             )
             summary.append(result)
 
-        # Sort by accuracy (None values last)
         return sorted(summary, key=lambda x: (x.accuracy is None, -(x.accuracy or 0)))
