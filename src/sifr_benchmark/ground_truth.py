@@ -1,7 +1,7 @@
 """
 Ground truth generation from screenshot + SiFR enrichment.
 """
-
+ 
 import base64
 import json
 from pathlib import Path
