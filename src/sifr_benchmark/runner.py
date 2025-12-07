@@ -6,11 +6,21 @@ import json
 import time
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 
 from .models import query_model, SUPPORTED_MODELS
 from .scoring import score_response
 from .formats import load_format, load_sifr, DEFAULT_MAX_CHARS
+
+
+class FailureReason(Enum):
+    """Reasons for test failure or warning."""
+    TRUNCATED = "truncated"
+    CONTEXT_EXCEEDED = "context_exceeded"
+    NOT_CAPTURED = "not_captured"
+    ID_MISMATCH = "id_mismatch"
+    NO_VISION = "no_vision"
 
 
 # Token costs per 1M tokens
@@ -75,6 +85,7 @@ class TestResult:
     latency_ms: int
     cost_usd: float
     error: Optional[str] = None
+    failure_reason: Optional[FailureReason] = None
 
 
 @dataclass 
@@ -87,6 +98,9 @@ class FormatResult:
     cost_usd: float
     total: int
     succeeded: int
+    status: str = "success"
+    failure_reason: Optional[FailureReason] = None
+    failure_details: dict = field(default_factory=dict)
 
 
 class BenchmarkRunner:
@@ -169,7 +183,8 @@ class BenchmarkRunner:
                 task_id=task_id, question=question, response="",
                 selector=None, expected=expected, success=False,
                 score=0.0, tokens=0, latency_ms=0, cost_usd=0,
-                error="Format not found"
+                error="Format not found",
+                failure_reason=FailureReason.NOT_CAPTURED
             )
 
         # Build prompt
@@ -247,13 +262,14 @@ class BenchmarkRunner:
         
         agg = defaultdict(lambda: {
             "scores": [], "tokens": [], "latencies": [], 
-            "costs": [], "successes": []
+            "costs": [], "successes": [], "errors": []
         })
         
         for r in results:
-            if r.get("error"):
-                continue
             key = r["format"]
+            if r.get("error"):
+                agg[key]["errors"].append(r["error"])
+                continue
             agg[key]["scores"].append(r["score"])
             agg[key]["tokens"].append(r["tokens"])
             agg[key]["latencies"].append(r["latency_ms"])
@@ -261,8 +277,28 @@ class BenchmarkRunner:
             agg[key]["successes"].append(1 if r.get("success") else 0)
 
         summary = []
-        for fmt, d in agg.items():
+        for fmt in self.formats:
+            d = agg.get(fmt, {"scores": [], "tokens": [], "latencies": [], "costs": [], "successes": [], "errors": []})
             n = len(d["scores"])
+            
+            # Determine status
+            if n == 0 and d["errors"]:
+                status = "failed"
+                failure_reason = FailureReason.NOT_CAPTURED
+                failure_details = {"format": fmt}
+            elif n > 0:
+                accuracy = sum(d["scores"]) / n
+                if accuracy >= 0.5:
+                    status = "success"
+                else:
+                    status = "warning"
+                failure_reason = None
+                failure_details = {}
+            else:
+                status = "skipped"
+                failure_reason = FailureReason.NOT_CAPTURED
+                failure_details = {"format": fmt}
+            
             summary.append(FormatResult(
                 format_name=fmt,
                 success_rate=sum(d["successes"]) / n if n else 0,
@@ -272,6 +308,9 @@ class BenchmarkRunner:
                 cost_usd=sum(d["costs"]),
                 total=n,
                 succeeded=sum(d["successes"]),
+                status=status,
+                failure_reason=failure_reason,
+                failure_details=failure_details,
             ))
 
-        return sorted(summary, key=lambda x: -x.success_rate)
+        return sorted(summary, key=lambda x: -x.accuracy)
