@@ -64,9 +64,15 @@ TASK: {question}
 Return: role "name" (e.g., button "Submit") or visible text. Nothing else.
 
 ANSWER:""",
+
+    "screenshot": """TASK: {question}
+
+Return the exact visible text of the element. Nothing else.
+
+ANSWER:""",
 }
 
-ALL_FORMATS = ["sifr", "html_raw", "axtree"]
+ALL_FORMATS = ["sifr", "html_raw", "axtree", "screenshot"]
 
 
 @dataclass
@@ -171,7 +177,55 @@ class BenchmarkRunner:
         target = task.get("target", {})
         expected = target.get("text") or task.get("answer", "")
         
-        # Load format
+        # Handle screenshot separately (needs vision)
+        if format_name == "screenshot":
+            screenshot_path = self.base_dir / "captures" / "screenshots" / f"{page_id}.png"
+            if not screenshot_path.exists():
+                return TestResult(
+                    model=model, format=format_name, page_id=page_id,
+                    task_id=task_id, question=question, response="",
+                    selector=None, expected=expected, success=False,
+                    score=0.0, tokens=0, latency_ms=0, cost_usd=0,
+                    error="Screenshot not found",
+                    failure_reason=FailureReason.NOT_CAPTURED
+                )
+            
+            prompt = PROMPTS["screenshot"].format(question=question)
+            image_bytes = screenshot_path.read_bytes()
+            
+            start = time.time()
+            resp = query_model(model, prompt, image=image_bytes)
+            latency = int((time.time() - start) * 1000)
+            
+            tokens = resp.get("tokens", 0)
+            cost = (tokens / 1_000_000) * TOKEN_COSTS.get(model, 1.0)
+            
+            if resp.get("error"):
+                # Check if it's a vision error
+                failure_reason = None
+                if "vision" in resp.get("error", "").lower():
+                    failure_reason = FailureReason.NO_VISION
+                return TestResult(
+                    model=model, format=format_name, page_id=page_id,
+                    task_id=task_id, question=question, response="",
+                    selector=None, expected=expected, success=False,
+                    score=0.0, tokens=tokens, latency_ms=latency, cost_usd=cost,
+                    error=resp["error"],
+                    failure_reason=failure_reason
+                )
+            
+            response = self._clean_response(resp.get("response", ""))
+            score = score_response(response, task, format_name, verified)
+            success = score >= 1.0
+            
+            return TestResult(
+                model=model, format=format_name, page_id=page_id,
+                task_id=task_id, question=question, response=response,
+                selector=resolved_selector, expected=expected, success=success,
+                score=score, tokens=tokens, latency_ms=latency, cost_usd=cost
+            )
+        
+        # Load format (text-based)
         try:
             context, _ = load_format(
                 page_id, format_name, self.base_dir,
