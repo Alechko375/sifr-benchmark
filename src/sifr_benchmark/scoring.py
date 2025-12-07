@@ -1,175 +1,96 @@
 """
 Response scoring for agent tasks.
-TEXT-BASED scoring - fair for all formats.
+Simple: action succeeded or not.
 """
+
 import re
+from typing import Optional
 
 
-def normalize_text(text: str) -> str:
-    """Normalize text for comparison."""
+def normalize(text: str) -> str:
     if not text:
         return ""
-    # Lowercase, strip, remove extra whitespace
-    text = text.lower().strip()
-    text = re.sub(r'\s+', ' ', text)
-    # Remove common punctuation
-    text = re.sub(r'["\'\.\,\!\?]', '', text)
-    return text
+    return re.sub(r'\s+', ' ', text.lower().strip())
 
 
-def extract_element_ids(text: str) -> set:
+def extract_sifr_id(response: str) -> Optional[str]:
+    response = response.strip().lower()
+    if re.match(r'^[a-z]{1,4}\d{2,4}$', response):
+        return response
+    match = re.search(r'\b([a-z]{1,4}\d{2,4})\b', response)
+    return match.group(1) if match else None
+
+
+def extract_selector(response: str) -> Optional[str]:
+    response = response.strip()
+    if response.startswith(("#", ".", "[")):
+        return response.split()[0]
+    match = re.search(r'(#[\w-]+)', response)
+    return match.group(1) if match else None
+
+
+def score_response(
+    response: str,
+    task: dict,
+    format_name: str,
+    verified: Optional[bool] = None
+) -> float:
     """
-    Extract element IDs from text.
-    Matches patterns like: btn001, lnk007, inp001, a010
-    """
-    if not text:
-        return set()
-    ids = re.findall(r'\b([a-z]{1,4}\d{2,4})\b', text.lower())
-    return set(ids)
-
-
-def text_similarity(response: str, expected: str) -> float:
-    """
-    Calculate text similarity score.
+    Score model response.
+    
+    If verified is provided (from Playwright), use that directly.
+    Otherwise, fall back to target matching.
     
     Returns:
-        1.0 - exact match
-        0.8 - response contains expected
-        0.6 - expected contains response (partial)
-        0.4 - significant word overlap
-        0.0 - no match
+        1.0 = verified success or exact match
+        0.5 = partial match (text matches, not verified)
+        0.0 = fail
     """
-    resp_norm = normalize_text(response)
-    exp_norm = normalize_text(expected)
+    # If we have Playwright verification result, use it
+    if verified is not None:
+        return 1.0 if verified else 0.0
     
-    if not resp_norm or not exp_norm:
+    # Fallback: match against target
+    response = response.strip()
+    if response.upper().startswith("ANSWER:"):
+        response = response[7:].strip()
+    
+    if not response or response.lower() == "none":
         return 0.0
     
-    # Exact match
-    if resp_norm == exp_norm:
-        return 1.0
+    target = task.get("target", {})
+    target_id = target.get("sifr_id")
+    target_selector = target.get("selector")
+    target_text = target.get("text") or task.get("answer", "")
     
-    # Response contains expected text
-    if exp_norm in resp_norm:
-        return 0.8
+    # SiFR: match ID
+    if format_name == "sifr":
+        resp_id = extract_sifr_id(response)
+        if resp_id and target_id and resp_id == target_id:
+            return 1.0
     
-    # Expected contains response (model gave shorter answer)
-    if resp_norm in exp_norm:
-        return 0.6
+    # HTML: match selector
+    elif format_name == "html_raw":
+        resp_sel = extract_selector(response)
+        if resp_sel and target_selector:
+            # Normalize and compare
+            if resp_sel.lower() == target_selector.lower():
+                return 1.0
+            # ID match
+            resp_id = re.search(r'#([\w-]+)', resp_sel)
+            tgt_id = re.search(r'#([\w-]+)', target_selector)
+            if resp_id and tgt_id and resp_id.group(1) == tgt_id.group(1):
+                return 1.0
     
-    # Word overlap
-    resp_words = set(resp_norm.split())
-    exp_words = set(exp_norm.split())
+    # AXTree: match text
+    elif format_name == "axtree":
+        if normalize(response) == normalize(target_text):
+            return 1.0
+        if normalize(target_text) in normalize(response):
+            return 0.8
     
-    if not exp_words:
-        return 0.0
-    
-    overlap = resp_words & exp_words
-    if overlap:
-        # Jaccard-like score
-        overlap_ratio = len(overlap) / len(exp_words)
-        if overlap_ratio >= 0.5:
-            return 0.4 + (overlap_ratio * 0.4)  # 0.4 - 0.8
+    # Text fallback
+    if normalize(response) == normalize(target_text):
+        return 0.5
     
     return 0.0
-
-
-def score_agent_task(response: str, expected: str, element_text: str = "") -> float:
-    """
-    Score agent task response.
-    
-    New logic (fair for all formats):
-    - expected is now element TEXT (e.g., "Sign In"), not ID
-    - Compare response text to expected text
-    - Also check element_text for backward compatibility
-    
-    Args:
-        response: Model's response
-        expected: Expected element TEXT (e.g., "Sign In", "Search")
-        element_text: Same as expected in new format (backward compat)
-        
-    Returns:
-        Score from 0.0 to 1.0
-    """
-    if not expected:
-        return 0.0
-    
-    response_clean = response.strip()
-    
-    # If response is "none" or empty, no match
-    if not response_clean or response_clean.lower() == "none":
-        return 0.0
-    
-    # Primary: text similarity with expected
-    score = text_similarity(response_clean, expected)
-    
-    # Fallback: check element_text if different from expected
-    if score < 0.5 and element_text and element_text != expected:
-        alt_score = text_similarity(response_clean, element_text)
-        score = max(score, alt_score)
-    
-    # Special case: model returned an ID, check if it appears in context
-    # This allows SiFR to return IDs which we can't directly verify
-    # but we give partial credit if it looks like a valid ID
-    if score < 0.5:
-        response_ids = extract_element_ids(response_clean)
-        if response_ids and len(response_clean) < 20:
-            # Model confidently returned an ID - give benefit of doubt
-            # In real benchmark, we'd verify against the page
-            # For now, 0.5 as "plausible but unverified"
-            score = max(score, 0.5)
-    
-    return score
-
-
-def score_response(response: str, expected: str, task_type: str = "action", element_text: str = "") -> float:
-    """
-    Main scoring function.
-    
-    Args:
-        response: Model's response
-        expected: Expected answer (element TEXT in fair mode)
-        task_type: Task type from ground truth
-        element_text: Same as expected (backward compat)
-        
-    Returns:
-        Score from 0.0 to 1.0
-    """
-    if not expected or expected.lower() in ("n/a", "none", "not_applicable"):
-        return 0.0
-    
-    return score_agent_task(response, expected, element_text)
-
-
-# Quick test
-if __name__ == "__main__":
-    tests = [
-        # (response, expected, expected_score, description)
-        ("Sign In", "Sign In", 1.0, "Exact match"),
-        ("sign in", "Sign In", 1.0, "Case insensitive"),
-        ("Click Sign In button", "Sign In", 0.8, "Contains expected"),
-        ("Sign", "Sign In", 0.6, "Partial match"),
-        ("Login", "Sign In", 0.0, "No match"),
-        ("btn003", "Sign In", 0.5, "ID returned - partial credit"),
-        ("Search", "Search", 1.0, "Exact match"),
-        ("search box", "Search", 0.8, "Contains"),
-        ("none", "Sign In", 0.0, "None response"),
-        ("", "Sign In", 0.0, "Empty response"),
-        ("Add to Cart", "Add to Cart", 1.0, "Multi-word exact"),
-        ("cart button", "Add to Cart", 0.4, "Word overlap"),
-    ]
-    
-    print("Scoring tests (text-based, fair):\n")
-    all_pass = True
-    for resp, exp, expected_score, desc in tests:
-        score = score_agent_task(resp, exp, "")
-        passed = abs(score - expected_score) < 0.15
-        status = "✅" if passed else "❌"
-        if not passed:
-            all_pass = False
-        print(f"{status} {desc}")
-        print(f"   '{resp}' vs '{exp}' → {score:.1f} (expected {expected_score})")
-        print()
-    
-    print("=" * 50)
-    print(f"{'All tests passed!' if all_pass else 'Some tests failed!'}")
