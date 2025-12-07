@@ -1,68 +1,69 @@
 """
 Ground truth generation for agent tasks using GPT-4o Vision.
-Generates tasks with element IDs as answers.
+Generates tasks from SCREENSHOT ONLY - no SiFR bias.
+Answer is element TEXT, not ID - fair for all formats.
 """
 
 import base64
 import json
 from pathlib import Path
 
-AGENT_GROUND_TRUTH_PROMPT = """You are analyzing a webpage screenshot alongside its SiFR representation.
+# FAIR prompt - screenshot only, no SiFR!
+AGENT_GROUND_TRUTH_PROMPT = """You are analyzing a webpage screenshot to generate agent automation tasks.
 
-SiFR is a compact format describing UI elements. Each element has an ID like btn001, lnk003, inp001.
-
-Your task: Generate agent tasks where the answer is an element ID from the SiFR.
-
-Look at the screenshot to understand WHAT each element does.
-Look at the SiFR to find the correct element ID.
+Your task: Look at the screenshot and identify interactive UI elements that an agent would need to use.
 
 Generate these task types:
 
-1. ACTION_CLICK (3-5 tasks): "What element ID should I click to [action]?"
+1. ACTION_CLICK (3-5 tasks): "Click the [element description]"
    - Login/signup buttons
-   - Navigation links
+   - Navigation links  
    - Submit buttons
    - Menu items
 
-2. ACTION_INPUT (1-2 tasks): "What element ID should I use to [input action]?"
+2. ACTION_INPUT (1-2 tasks): "Enter text in the [input description]"
    - Search fields
    - Text inputs
+   - Form fields
 
-3. ACTION_LOCATE (2-3 tasks): "What element ID contains [content]?"
+3. ACTION_LOCATE (2-3 tasks): "Find the [content description]"
    - Main heading
    - Specific text or logo
+   - Navigation sections
 
 Rules:
-- ONLY use element IDs that exist in the SiFR below
-- Each answer must be a single element ID (e.g., "btn001", "lnk007", "inp001")
+- Look ONLY at the screenshot - describe what you SEE
+- Answer must be the EXACT visible text on the element (e.g., "Sign In", "Search", "Add to Cart")
+- If element has no text, describe it briefly (e.g., "search icon", "hamburger menu")
 - Tasks should be clear and unambiguous
-- Focus on common agent actions: login, search, navigate, submit
+- Focus on common agent actions
 
 Respond ONLY in this JSON format:
 {
-  "page_title": "detected page title",
+  "page_title": "detected page title from screenshot",
   "tasks": [
     {
       "id": "act_01",
       "type": "action_click",
-      "question": "What element ID should I click to login?",
-      "answer": "lnk007",
-      "element_text": "login"
+      "question": "Click the Sign In button",
+      "answer": "Sign In"
     },
     {
       "id": "act_02", 
       "type": "action_input",
-      "question": "What element ID should I use to enter a search query?",
-      "answer": "inp001",
-      "element_text": "Search"
+      "question": "Enter a search query in the search box",
+      "answer": "Search"
+    },
+    {
+      "id": "act_03",
+      "type": "action_locate",
+      "question": "Find the main page heading",
+      "answer": "Welcome to Example"
     }
   ]
 }
 
-SiFR content:
-```
-{sifr_content}
-```
+Important: The "answer" field must contain the VISIBLE TEXT on the element, not any ID or code.
 """
 
 
@@ -72,17 +73,10 @@ def encode_image(image_path: Path) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def load_sifr(sifr_path: Path) -> str:
-    """Load SiFR file content."""
-    with open(sifr_path, "r", encoding="utf-8") as f:
-        return f.read()
-
-
 def extract_json(text: str) -> str:
     """
     Extract JSON object from text - handles various GPT response formats.
     """
-    # Try markdown code blocks first
     if "```json" in text:
         try:
             return text.split("```json")[1].split("```")[0].strip()
@@ -95,12 +89,10 @@ def extract_json(text: str) -> str:
         except IndexError:
             pass
     
-    # Find JSON object by matching braces
     start = text.find("{")
     if start == -1:
         return None
     
-    # Find matching closing brace
     depth = 0
     for i, char in enumerate(text[start:], start):
         if char == "{":
@@ -115,19 +107,20 @@ def extract_json(text: str) -> str:
 
 def generate_ground_truth(
     screenshot_path: Path, 
-    sifr_path: Path,
+    sifr_path: Path = None,  # Not used anymore, kept for compatibility
     output_path: Path = None
 ) -> dict:
     """
-    Generate agent ground truth from screenshot + SiFR.
+    Generate agent ground truth from screenshot ONLY.
+    No SiFR bias - fair benchmark for all formats.
     
     Args:
         screenshot_path: Path to screenshot PNG
-        sifr_path: Path to SiFR file
+        sifr_path: IGNORED - kept for backward compatibility
         output_path: Optional path to save ground truth JSON
         
     Returns:
-        Ground truth dict with agent tasks
+        Ground truth dict with agent tasks (answers are element TEXT, not IDs)
     """
     import os
     from openai import OpenAI
@@ -138,27 +131,8 @@ def generate_ground_truth(
     
     client = OpenAI(api_key=api_key)
     
-    # Load inputs
+    # Load screenshot only
     base64_image = encode_image(screenshot_path)
-    sifr_content = load_sifr(sifr_path)
-    
-    # Check if SiFR is empty
-    if not sifr_content or len(sifr_content.strip()) < 10:
-        return {"error": f"SiFR file is empty or too small: {sifr_path}"}
-    
-    # Truncate SiFR if too large (GPT-4o has ~128K token limit)
-    MAX_SIFR_CHARS = 100000  # ~12K tokens, safe limit
-    if len(sifr_content) > MAX_SIFR_CHARS:
-        # Try to truncate at a sensible point
-        sifr_content = sifr_content[:MAX_SIFR_CHARS]
-        # Find last complete line
-        last_newline = sifr_content.rfind('\n')
-        if last_newline > MAX_SIFR_CHARS * 0.8:
-            sifr_content = sifr_content[:last_newline]
-        sifr_content += "\n... [truncated - showing first 50KB]"
-    
-    # Build prompt with SiFR (use concatenation, not .format() - SiFR contains {})
-    prompt = AGENT_GROUND_TRUTH_PROMPT.replace("{sifr_content}", sifr_content)
     
     try:
         response = client.chat.completions.create(
@@ -167,7 +141,7 @@ def generate_ground_truth(
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": AGENT_GROUND_TRUTH_PROMPT},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -182,24 +156,26 @@ def generate_ground_truth(
             temperature=0
         )
         
-        # Parse response
         content = response.choices[0].message.content
         
-        # Extract JSON from response - robust parsing
         json_str = extract_json(content)
         if not json_str:
             return {"error": f"Could not extract JSON from response: {content[:100]}..."}
         
         ground_truth = json.loads(json_str)
+        
+        # Add element_text field (same as answer for compatibility)
+        for task in ground_truth.get("tasks", []):
+            task["element_text"] = task.get("answer", "")
+        
         ground_truth["_meta"] = {
             "screenshot": str(screenshot_path),
-            "sifr": str(sifr_path),
             "model": "gpt-4o",
             "tokens": response.usage.total_tokens,
-            "mode": "agent"
+            "mode": "agent_fair",  # Mark as fair mode
+            "bias_free": True
         }
         
-        # Save if output path provided
         if output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as f:
@@ -214,31 +190,31 @@ def generate_ground_truth(
 def generate_ground_truth_for_page(page_name: str, base_dir: Path = None) -> dict:
     """
     Generate agent ground truth for a captured page.
-    
-    Args:
-        page_name: Name of the page (e.g., "news_ycombinator_com")
-        base_dir: Base directory with datasets/formats structure
-        
-    Returns:
-        Ground truth dict with agent tasks
+    Uses screenshot ONLY - no SiFR bias.
     """
     if base_dir is None:
         base_dir = Path(".")
     
-    screenshot_path = base_dir / "datasets" / "formats" / "screenshots" / f"{page_name}.png"
-    sifr_path = base_dir / "datasets" / "formats" / "sifr" / f"{page_name}.sifr"
-    output_path = base_dir / "benchmark" / "ground-truth" / f"{page_name}.json"
+    # Try multiple screenshot locations
+    screenshot_paths = [
+        base_dir / "captures" / "screenshots" / f"{page_name}.png",
+        base_dir / "datasets" / "formats" / "screenshots" / f"{page_name}.png",
+    ]
     
-    if not screenshot_path.exists():
-        return {"error": f"Screenshot not found: {screenshot_path}"}
+    screenshot_path = None
+    for path in screenshot_paths:
+        if path.exists():
+            screenshot_path = path
+            break
     
-    if not sifr_path.exists():
-        return {"error": f"SiFR not found: {sifr_path}"}
+    if not screenshot_path:
+        return {"error": f"Screenshot not found in: {screenshot_paths}"}
     
-    return generate_ground_truth(screenshot_path, sifr_path, output_path)
+    output_path = base_dir / "ground-truth" / f"{page_name}.json"
+    
+    return generate_ground_truth(screenshot_path, output_path=output_path)
 
 
-# CLI support
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
