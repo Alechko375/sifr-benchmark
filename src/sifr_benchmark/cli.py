@@ -2,7 +2,7 @@
 CLI interface for SiFR Benchmark.
 Each benchmark run creates an isolated directory with all data.
 """
-
+ 
 import click
 from pathlib import Path
 from rich.console import Console
