@@ -6,7 +6,7 @@ Usage:
     sifr-bench --help
 """
 
-__version__ = "0.1.23"
+__version__ = "0.1.24"
 __author__ = "SiFR Contributors"
 
 from .runner import BenchmarkRunner
