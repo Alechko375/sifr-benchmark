@@ -66,12 +66,12 @@ TASK: {question}
 
 Rules:
 - Find the element that matches the task
-- Return the element ID if available (like btn001, lnk007, inp001)
-- OR return the exact text/label of the element
+- Return the VISIBLE TEXT or LABEL of the element (what a user would see)
+- Examples: "Sign In", "Search", "Add to Cart", "Submit"
 - If no element matches, respond with "none"
 
 Respond in this exact format:
-ANSWER: [element ID or element text]
+ANSWER: [visible text of the element]
 CONFIDENCE: [0-100]"""
 
 
