@@ -38,6 +38,73 @@ FOOTNOTE_TEMPLATES = {
 }
 
 
+# ============================================================
+# PROMPTS - Each format gets native instructions
+# ============================================================
+
+EXECUTION_PROMPTS = {
+    "sifr": """You are a web automation agent. The page is described in SiFR format.
+
+{context}
+
+TASK: {task}
+
+Instructions:
+- Find the element that matches the task
+- Return ONLY the element ID (like a002, btn001, input001)
+- Element IDs are in ====NODES==== section
+- Element text is in ====DETAILS==== section under same ID
+
+Respond with just the element ID, nothing else.
+
+ANSWER:""",
+
+    "html_raw": """You are a web automation agent. The page HTML is below.
+
+{context}
+
+TASK: {task}
+
+Instructions:
+- Find the element that matches the task
+- Return a CSS selector that uniquely identifies it
+- Prefer: #id, [data-testid], .specific-class
+- If no good selector, return the exact visible text
+
+Respond with just the selector or text, nothing else.
+
+ANSWER:""",
+
+    "axtree": """You are a web automation agent. The page accessibility tree is below.
+
+{context}
+
+TASK: {task}
+
+Instructions:
+- Find the element that matches the task
+- Return the exact text/name of the element as shown in the tree
+- This will be used for text-based element lookup
+
+Respond with just the element text, nothing else.
+
+ANSWER:""",
+
+    "screenshot": """You are a web automation agent looking at a screenshot.
+
+TASK: {task}
+
+Instructions:
+- Find the element that matches the task
+- Return the exact visible text of the element
+- This will be used for text-based element lookup
+
+Respond with just the element text, nothing else.
+
+ANSWER:""",
+}
+
+
 def format_footnote(reason: FailureReason, details: dict, model: str) -> str:
     template = FOOTNOTE_TEMPLATES.get(reason, str(reason))
     details = details.copy()
@@ -112,7 +179,6 @@ def aggregate_by_page(results: list[dict], runner: BenchmarkRunner) -> dict[str,
 
 
 def aggregate_by_model(results: list[dict], runner: BenchmarkRunner) -> dict[str, list[FormatResult]]:
-    """Group and aggregate results by model."""
     by_model = defaultdict(list)
     for r in results:
         by_model[r.get("model", "unknown")].append(r)
@@ -123,11 +189,9 @@ def aggregate_by_model(results: list[dict], runner: BenchmarkRunner) -> dict[str
 
 
 def aggregate_by_page_and_model(results: list[dict], runner: BenchmarkRunner) -> dict[str, dict[str, list[FormatResult]]]:
-    """Group results by page, then by model."""
     by_page = defaultdict(lambda: defaultdict(list))
     for r in results:
         by_page[r["page_id"]][r.get("model", "unknown")].append(r)
-    
     aggregated = {}
     for page_id, models in by_page.items():
         aggregated[page_id] = {}
@@ -169,21 +233,15 @@ def render_benchmark_results(site_name: str, results: list[FormatResult], model:
 
 
 def render_multi_model_results(site_name: str, results_by_model: dict[str, list[FormatResult]]):
-    """Render results with model comparison."""
-    # Get all formats
     all_formats = set()
     for model_results in results_by_model.values():
         for r in model_results:
             all_formats.add(r.format_name)
-    
     models = list(results_by_model.keys())
-    
     table = Table(title=f"Benchmark Results: {site_name}")
     table.add_column("Format", style="cyan")
     for model in models:
         table.add_column(model, justify="right")
-    
-    # Build format -> model -> accuracy map
     format_data = {}
     for model, model_results in results_by_model.items():
         for r in model_results:
@@ -191,8 +249,6 @@ def render_multi_model_results(site_name: str, results_by_model: dict[str, list[
                 format_data[r.format_name] = {}
             acc = f"{r.accuracy * 100:.1f}%" if r.accuracy is not None else "—"
             format_data[r.format_name][model] = acc
-    
-    # Sort by first model's accuracy
     def sort_key(fmt):
         first_model = models[0]
         acc_str = format_data.get(fmt, {}).get(first_model, "0%")
@@ -200,12 +256,46 @@ def render_multi_model_results(site_name: str, results_by_model: dict[str, list[
             return -float(acc_str.rstrip("%"))
         except:
             return 0
-    
     for fmt in sorted(format_data.keys(), key=sort_key):
         row = [fmt]
         for model in models:
             row.append(format_data[fmt].get(model, "—"))
         table.add_row(*row)
+    console.print(table)
+
+
+def render_execution_results(results: list[dict], site_name: str):
+    """Render execution-based benchmark results."""
+    table = Table(title=f"Execution Results: {site_name}")
+    table.add_column("Format", style="cyan")
+    table.add_column("Success", justify="right", style="green")
+    table.add_column("Failed", justify="right", style="red")
+    table.add_column("Rate", justify="right")
+    table.add_column("Avg Tokens", justify="right")
+    table.add_column("Avg Latency", justify="right")
+    
+    by_format = defaultdict(list)
+    for r in results:
+        by_format[r.get("format", "unknown")].append(r)
+    
+    for fmt in ["sifr", "html_raw", "axtree", "screenshot"]:
+        if fmt not in by_format:
+            continue
+        fmt_results = by_format[fmt]
+        success = sum(1 for r in fmt_results if r.get("success"))
+        failed = len(fmt_results) - success
+        rate = f"{success/len(fmt_results)*100:.0f}%" if fmt_results else "—"
+        avg_tokens = sum(r.get("tokens", 0) for r in fmt_results) // max(len(fmt_results), 1)
+        avg_latency = sum(r.get("latency_ms", 0) for r in fmt_results) // max(len(fmt_results), 1)
+        
+        table.add_row(
+            fmt,
+            str(success),
+            str(failed),
+            rate,
+            f"{avg_tokens:,}",
+            f"{avg_latency:,}ms"
+        )
     
     console.print(table)
 
@@ -263,7 +353,6 @@ def run(models, formats, run_dir, runs, target_size):
         results = runner.run()
         progress.update(task, completed=True)
     
-    # Multi-model output
     if len(model_list) > 1:
         by_model = aggregate_by_model(results, runner)
         render_multi_model_results("All Sites", by_model)
@@ -284,7 +373,8 @@ def run(models, formats, run_dir, runs, target_size):
 @click.option("--base-dir", "-b", default="./benchmark_runs", help="Base directory for runs")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
 @click.option("--target-size", "-s", default=DEFAULT_TARGET_SIZE_KB, type=int, help="Budget in KB for ALL formats")
-def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, target_size):
+@click.option("--execution", is_flag=True, help="Use execution-based verification (Playwright)")
+def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, target_size, execution):
     """Full benchmark: capture → ground truth → test (isolated run)."""
     import asyncio
     try:
@@ -304,6 +394,8 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
     console.print(f"Models: [yellow]{', '.join(model_list)}[/yellow]")
     console.print(f"Formats: {', '.join(ALL_FORMATS)}")
     console.print(f"Budget (all formats): [yellow]{target_size}KB[/yellow]")
+    if execution:
+        console.print(f"Mode: [green]Execution-based (Playwright verification)[/green]")
     
     # Step 1: Capture
     console.print("\n[bold]Step 1/3: Capturing with E2LLM...[/bold]")
@@ -346,81 +438,66 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
             console.print(f"  ⚠️ {page_id}: {e}")
     
     # Step 3: Benchmark
-    console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
-    runner = BenchmarkRunner(
-        models=model_list,
-        formats=ALL_FORMATS,
-        runs=runs,
-        base_dir=run_dir,
-        max_chars=target_size_bytes
-    )
-    bench_results = runner.run()
-    
-    if multi_model:
-        # Multi-model: show comparison tables
-        by_page_model = aggregate_by_page_and_model(bench_results, runner)
+    if execution:
+        # Execution-based benchmark with Playwright verification
+        console.print("\n[bold]Step 3/3: Running execution-based benchmark...[/bold]")
+        bench_results = asyncio.run(run_execution_benchmark(
+            run_dir=run_dir,
+            urls=list(urls),
+            captured_pages=captured_pages,
+            model_list=model_list,
+            extension=extension,
+            target_size_bytes=target_size_bytes,
+            verbose=verbose
+        ))
         
-        for page_id, models_data in by_page_model.items():
-            site_name = page_id.replace("_", ".")
-            console.print(f"\n[bold]{site_name}[/bold]")
-            render_multi_model_results(site_name, models_data)
-            console.print()
-        
-        # Combined across all pages
-        if len(by_page_model) > 1:
-            by_model = aggregate_by_model(bench_results, runner)
-            render_multi_model_results(f"Combined ({len(by_page_model)} sites)", by_model)
-    else:
-        # Single model: original behavior
-        by_page = aggregate_by_page(bench_results, runner)
-        for page_id, summary in by_page.items():
-            site_name = page_id.replace("_", ".")
+        # Render execution results
+        for page_id in captured_pages:
             page_results = [r for r in bench_results if r.get("page_id") == page_id]
-            console.print(f"\n[bold]{site_name}[/bold]")
-            for fmt in ALL_FORMATS:
-                render_errors(page_results, fmt, verbose=verbose)
-            render_benchmark_results(site_name, summary, model_list[0])
-            console.print()
+            if page_results:
+                site_name = page_id.replace("_", ".")
+                render_execution_results(page_results, site_name)
+    else:
+        # Original scoring-based benchmark
+        console.print("\n[bold]Step 3/3: Running benchmark...[/bold]")
+        runner = BenchmarkRunner(
+            models=model_list,
+            formats=ALL_FORMATS,
+            runs=runs,
+            base_dir=run_dir,
+            max_chars=target_size_bytes
+        )
+        bench_results = runner.run()
         
-        if len(by_page) > 1:
-            combined = runner.aggregate(bench_results)
-            render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
+        if multi_model:
+            by_page_model = aggregate_by_page_and_model(bench_results, runner)
+            for page_id, models_data in by_page_model.items():
+                site_name = page_id.replace("_", ".")
+                console.print(f"\n[bold]{site_name}[/bold]")
+                render_multi_model_results(site_name, models_data)
+                console.print()
+            if len(by_page_model) > 1:
+                by_model = aggregate_by_model(bench_results, runner)
+                render_multi_model_results(f"Combined ({len(by_page_model)} sites)", by_model)
+        else:
+            by_page = aggregate_by_page(bench_results, runner)
+            for page_id, summary in by_page.items():
+                site_name = page_id.replace("_", ".")
+                page_results = [r for r in bench_results if r.get("page_id") == page_id]
+                console.print(f"\n[bold]{site_name}[/bold]")
+                for fmt in ALL_FORMATS:
+                    render_errors(page_results, fmt, verbose=verbose)
+                render_benchmark_results(site_name, summary, model_list[0])
+                console.print()
+            if len(by_page) > 1:
+                combined = runner.aggregate(bench_results)
+                render_benchmark_results(f"Combined ({len(by_page)} sites)", combined, model_list[0])
     
     # Save results
     with open(run_dir / "results" / "raw_results.json", "w") as f:
         json.dump(bench_results, f, indent=2, default=str)
     
-    # Save summary with model info
-    if multi_model:
-        by_model = aggregate_by_model(bench_results, runner)
-        summary_data = {}
-        for model, model_results in by_model.items():
-            summary_data[model] = [
-                {
-                    "format": r.format_name,
-                    "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
-                    "avg_tokens": r.tokens or 0,
-                    "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
-                    "status": r.status,
-                }
-                for r in model_results
-            ]
-    else:
-        summary = runner.aggregate(bench_results)
-        summary_data = [
-            {
-                "format": r.format_name,
-                "accuracy": f"{r.accuracy * 100:.1f}%" if r.accuracy else "N/A",
-                "avg_tokens": r.tokens or 0,
-                "avg_latency": f"{r.latency_ms}ms" if r.latency_ms else "N/A",
-                "status": r.status,
-            }
-            for r in summary
-        ]
-    
-    with open(run_dir / "results" / "summary.json", "w") as f:
-        json.dump(summary_data, f, indent=2)
-    
+    # Save metadata
     metadata = {
         "timestamp": datetime.now().isoformat(),
         "urls": list(urls),
@@ -428,6 +505,7 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
         "formats": ALL_FORMATS,
         "pages": captured_pages,
         "target_size_kb": target_size,
+        "execution_mode": execution,
         "version": __version__,
     }
     with open(run_dir / "run_meta.json", "w") as f:
@@ -435,6 +513,156 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
     
     console.print(f"\n[green]✅ Benchmark complete![/green]")
     console.print(f"[cyan]Results: {run_dir}[/cyan]")
+
+
+async def run_execution_benchmark(
+    run_dir: Path,
+    urls: list,
+    captured_pages: list,
+    model_list: list,
+    extension: str,
+    target_size_bytes: int,
+    verbose: bool = False
+) -> list[dict]:
+    """Run execution-based benchmark with Playwright verification."""
+    from playwright.async_api import async_playwright
+    from .verification import SiFRResolver, resolve_to_locator
+    from .models import query_model
+    from .formats import load_format
+    
+    results = []
+    
+    async with async_playwright() as p:
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir="./e2llm-chrome-profile",
+            headless=False,
+            args=[
+                f"--disable-extensions-except={extension}",
+                f"--load-extension={extension}",
+            ]
+        )
+        page = await context.new_page()
+        
+        for page_id, url in zip(captured_pages, urls):
+            gt_path = run_dir / "ground-truth" / f"{page_id}.json"
+            if not gt_path.exists():
+                continue
+            
+            gt = json.loads(gt_path.read_text())
+            tasks = gt.get("tasks", [])
+            
+            if not tasks:
+                continue
+            
+            console.print(f"\n  [bold]{page_id}[/bold]")
+            
+            # Load page
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                console.print(f"    ❌ Failed to load: {e}")
+                continue
+            
+            # Load SiFR resolver
+            sifr_path = run_dir / "captures" / "sifr" / f"{page_id}.sifr"
+            sifr_resolver = None
+            if sifr_path.exists():
+                sifr_resolver = SiFRResolver(sifr_path.read_text())
+            
+            for model in model_list:
+                for fmt in ALL_FORMATS:
+                    if fmt == "screenshot":
+                        continue  # Skip screenshot for now
+                    
+                    # Load format
+                    try:
+                        context_str, meta = load_format(
+                            page_id, fmt, run_dir,
+                            return_meta=True, max_chars=target_size_bytes
+                        )
+                    except FileNotFoundError:
+                        continue
+                    
+                    for task in tasks:
+                        task_id = task.get("id", "?")
+                        question = task.get("question", "")
+                        task_type = task.get("type", "action_click")
+                        target_selector = task.get("target", {}).get("selector")
+                        
+                        # Get prompt for this format
+                        prompt = EXECUTION_PROMPTS.get(fmt, EXECUTION_PROMPTS["html_raw"])
+                        full_prompt = prompt.format(context=context_str, task=question)
+                        
+                        # Query model
+                        import time
+                        start = time.time()
+                        try:
+                            response, tokens = query_model(model, full_prompt)
+                            latency_ms = int((time.time() - start) * 1000)
+                        except Exception as e:
+                            results.append({
+                                "page_id": page_id,
+                                "model": model,
+                                "format": fmt,
+                                "task_id": task_id,
+                                "success": False,
+                                "error": str(e),
+                                "tokens": 0,
+                                "latency_ms": 0,
+                            })
+                            continue
+                        
+                        # Clean response
+                        response_clean = response.strip().strip('"').strip("'")
+                        
+                        # Resolve to locator and verify
+                        success = False
+                        error = None
+                        resolved_selector = None
+                        
+                        try:
+                            locator, resolved_selector = await resolve_to_locator(
+                                page, response_clean, fmt, sifr_resolver
+                            )
+                            
+                            if locator:
+                                # Try to interact with element
+                                if task_type == "action_click":
+                                    await locator.click(trial=True, timeout=3000)
+                                    success = True
+                                elif task_type == "action_input":
+                                    await locator.fill("test", timeout=3000)
+                                    success = True
+                                else:
+                                    # Just check visibility
+                                    await locator.wait_for(state="visible", timeout=3000)
+                                    success = True
+                        except Exception as e:
+                            error = str(e)[:100]
+                        
+                        result = {
+                            "page_id": page_id,
+                            "model": model,
+                            "format": fmt,
+                            "task_id": task_id,
+                            "question": question,
+                            "response": response_clean,
+                            "resolved_selector": resolved_selector,
+                            "success": success,
+                            "error": error,
+                            "tokens": tokens,
+                            "latency_ms": latency_ms,
+                        }
+                        results.append(result)
+                        
+                        status = "✅" if success else "❌"
+                        if verbose:
+                            console.print(f"    {status} [{fmt}] {task_id}: {response_clean[:30]}...")
+        
+        await context.close()
+    
+    return results
 
 
 @main.command()
@@ -489,7 +717,6 @@ def compare(run_dirs):
                 meta = json.load(f)
         models_str = ",".join(meta.get("models", ["?"]))
         if isinstance(summary, dict):
-            # Multi-model format
             first_model = list(summary.keys())[0]
             model_summary = summary[first_model]
         else:
@@ -513,7 +740,8 @@ def list_runs():
     table.add_column("Date", style="dim")
     table.add_column("Models", style="yellow")
     table.add_column("URLs", style="blue")
-    table.add_column("Status", style="green")
+    table.add_column("Mode", style="green")
+    table.add_column("Status", style="magenta")
     for run_dir in sorted(runs_dir.iterdir(), reverse=True):
         if not run_dir.is_dir():
             continue
@@ -525,7 +753,15 @@ def list_runs():
                 meta = json.load(f)
         status = "✅ Complete" if results_path.exists() else "⏳ Partial"
         models_str = ",".join(meta.get("models", ["?"]))
-        table.add_row(run_dir.name, meta.get("timestamp", "")[:16].replace("T", " "), models_str, str(len(meta.get("urls", []))), status)
+        mode = "Exec" if meta.get("execution_mode") else "Score"
+        table.add_row(
+            run_dir.name,
+            meta.get("timestamp", "")[:16].replace("T", " "),
+            models_str,
+            str(len(meta.get("urls", []))),
+            mode,
+            status
+        )
     console.print(table)
 
 
@@ -536,6 +772,9 @@ def info():
     console.print(f"""
 [bold]Quick Start:[/bold]
   sifr-bench full-benchmark-e2llm https://example.com -e /path/to/extension
+
+[bold]Execution-based benchmark (recommended):[/bold]
+  sifr-bench full-benchmark-e2llm https://example.com -e /path/to/ext --execution
 
 [bold]Multi-model comparison:[/bold]
   sifr-bench full-benchmark-e2llm https://example.com -e /path/to/ext -m gpt-4o-mini,claude-haiku
@@ -553,11 +792,16 @@ def info():
   -m, --models          Models to test (comma-separated, default: gpt-4o-mini)
   -r, --runs            Number of runs per test (default: 1)
   -s, --target-size     Budget in KB for ALL formats (default: {DEFAULT_TARGET_SIZE_KB})
+  --execution           Use Playwright verification (objective)
+
+[bold]Benchmark modes:[/bold]
+  Score-based (default)  — Compare model response to expected text
+  Execution-based        — Verify action via Playwright (--execution)
 
 [bold]Output format:[/bold]
-  ✅ — Success (accuracy >= 50%)
+  ✅ — Success (accuracy >= 50% / action succeeded)
   ⚠️  — Warning (accuracy < 50%)
-  ❌ — Failed (accuracy = 0%)
+  ❌ — Failed (accuracy = 0% / action failed)
 """)
 
 
