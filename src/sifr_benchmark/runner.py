@@ -1,5 +1,6 @@
 """
 Benchmark runner - executes agent tasks across models and formats.
+Sequential execution to avoid rate limits.
 """
 
 import json
@@ -9,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 from enum import Enum
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .models import query_model, SUPPORTED_MODELS, supports_vision
 from .scoring import score_response
@@ -96,9 +96,9 @@ MODEL_CONTEXT_LIMITS = {
     "claude-haiku": 200000,
 }
 
-# Parallel execution settings
-MAX_WORKERS_PER_PROVIDER = 3  # Avoid rate limits
-MAX_TOTAL_WORKERS = 8
+# Delay between API calls to avoid rate limits
+API_DELAY_SECONDS = 2.0
+MODEL_SWITCH_DELAY = 5.0  # Extra delay when switching models
 
 
 class BenchmarkRunner:
@@ -112,7 +112,6 @@ class BenchmarkRunner:
         runs: int = 1,
         base_dir: Optional[Path] = None,
         max_chars: int = DEFAULT_MAX_CHARS,
-        parallel: bool = True,  # NEW: enable/disable parallelism
     ):
         self.models = models
         self.formats = formats
@@ -120,7 +119,6 @@ class BenchmarkRunner:
         self.runs = runs
         self.base_dir = Path(base_dir) if base_dir else Path(".")
         self.max_chars = max_chars
-        self.parallel = parallel
         self._validate_config()
 
     def _validate_config(self):
@@ -230,9 +228,6 @@ class BenchmarkRunner:
                     failure_details={"format": "screenshot"}
                 )
         
-        if format_name == "axtree":
-            return None
-        
         return None
 
     def run_single(
@@ -275,7 +270,6 @@ class BenchmarkRunner:
             )
 
         original_tokens = meta.original_size // 4
-        approx_tokens = len(context) // 4
         limit = MODEL_CONTEXT_LIMITS.get(model, 128000)
         
         if original_tokens > limit and not meta.was_truncated:
@@ -417,17 +411,8 @@ class BenchmarkRunner:
             latency_ms=latency,
         )
 
-    def _run_single_task_wrapper(self, args: tuple) -> dict:
-        """Wrapper for parallel execution."""
-        model, format_name, page_id, task, run_num = args
-        result = self.run_single(model, format_name, page_id, task, run_num)
-        result_dict = result.__dict__.copy()
-        if result.failure_reason:
-            result_dict["failure_reason"] = result.failure_reason.value
-        return result_dict
-
     def run(self, progress_callback=None) -> list[dict]:
-        """Run full benchmark with parallel execution."""
+        """Run full benchmark sequentially to avoid rate limits."""
         pages = self._discover_pages()
         results = []
 
@@ -435,9 +420,18 @@ class BenchmarkRunner:
             print("No pages found for benchmark")
             return results
 
-        # Build task queue
-        task_queue = []
-        skipped_results = []
+        total_tasks = 0
+        for page_id in pages:
+            ground_truth = self._load_ground_truth(page_id)
+            tasks = self._get_tasks_from_ground_truth(ground_truth)
+            for model in self.models:
+                for format_name in self.formats:
+                    unavailable = self._check_format_availability(format_name, page_id, model)
+                    if not unavailable:
+                        total_tasks += len(tasks) * self.runs
+
+        completed = 0
+        last_model = None
 
         for page_id in pages:
             ground_truth = self._load_ground_truth(page_id)
@@ -448,11 +442,16 @@ class BenchmarkRunner:
                 continue
 
             for model in self.models:
+                # Extra delay when switching models
+                if last_model and last_model != model:
+                    time.sleep(MODEL_SWITCH_DELAY)
+                last_model = model
+
                 for format_name in self.formats:
                     # Check format availability
                     unavailable = self._check_format_availability(format_name, page_id, model)
                     if unavailable:
-                        skipped_results.append({
+                        results.append({
                             "model": model,
                             "format": format_name,
                             "page_id": page_id,
@@ -472,64 +471,24 @@ class BenchmarkRunner:
 
                     for task in tasks:
                         for run_num in range(1, self.runs + 1):
-                            task_queue.append((model, format_name, page_id, task, run_num))
-
-        results.extend(skipped_results)
-
-        if not task_queue:
-            return results
-
-        total_tasks = len(task_queue)
-        completed = 0
-
-        if self.parallel and total_tasks > 1:
-            # Parallel execution
-            # Group by provider to respect rate limits
-            openai_tasks = [t for t in task_queue if t[0].startswith("gpt")]
-            anthropic_tasks = [t for t in task_queue if t[0].startswith("claude")]
-            
-            # Calculate workers per provider
-            num_workers = min(MAX_TOTAL_WORKERS, total_tasks)
-            
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = {
-                    executor.submit(self._run_single_task_wrapper, task): task 
-                    for task in task_queue
-                }
-                
-                for future in as_completed(futures):
-                    try:
-                        result = future.result()
-                        results.append(result)
-                        completed += 1
-                        if progress_callback:
-                            progress_callback(completed, total_tasks)
-                    except Exception as e:
-                        task = futures[future]
-                        results.append({
-                            "model": task[0],
-                            "format": task[1],
-                            "page_id": task[2],
-                            "task_id": task[3]["id"],
-                            "run": task[4],
-                            "response": "",
-                            "expected": "",
-                            "score": 0.0,
-                            "confidence": 0,
-                            "tokens": 0,
-                            "latency_ms": 0,
-                            "error": str(e),
-                        })
-                        completed += 1
-        else:
-            # Sequential execution (fallback)
-            for task_args in task_queue:
-                result = self._run_single_task_wrapper(task_args)
-                results.append(result)
-                completed += 1
-                if progress_callback:
-                    progress_callback(completed, total_tasks)
-                time.sleep(0.1)  # Reduced from 0.3
+                            result = self.run_single(
+                                model=model,
+                                format_name=format_name,
+                                page_id=page_id,
+                                task=task,
+                                run_num=run_num,
+                            )
+                            result_dict = result.__dict__.copy()
+                            if result.failure_reason:
+                                result_dict["failure_reason"] = result.failure_reason.value
+                            results.append(result_dict)
+                            
+                            completed += 1
+                            if progress_callback:
+                                progress_callback(completed, total_tasks)
+                            
+                            # Delay between API calls
+                            time.sleep(API_DELAY_SECONDS)
 
         return results
 
