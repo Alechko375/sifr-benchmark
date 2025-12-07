@@ -120,39 +120,81 @@ def extract_numeric_values(page_data: dict) -> dict:
     return data
 
 
-def find_element_by_response(response: str, elements: list[dict], threshold: float = 0.5) -> Optional[dict]:
-    """Find element that best matches response text."""
-    response_lower = response.lower().strip()
+def clean_response(response: str) -> str:
+    """Clean model response to extract key content."""
+    response = response.lower().strip()
     
-    # Clean response - remove common prefixes
-    for prefix in ["answer:", "the", "a ", "an "]:
-        if response_lower.startswith(prefix):
-            response_lower = response_lower[len(prefix):].strip()
+    # Remove common prefixes/patterns
+    prefixes = [
+        "answer:", "the answer is", "the product is", "the category is",
+        "the product with", "the item with", "the element is",
+        "i found", "based on", "looking at", "according to",
+        "the", "a ", "an ", "\"", "'"
+    ]
+    for prefix in prefixes:
+        if response.startswith(prefix):
+            response = response[len(prefix):].strip()
+    
+    # Remove trailing punctuation
+    response = response.rstrip(".,!?\"'")
+    
+    # Take first line/sentence if multiple
+    if "\n" in response:
+        response = response.split("\n")[0]
+    if ". " in response and len(response) > 100:
+        response = response.split(". ")[0]
+    
+    return response.strip()
+
+
+def find_element_by_response(response: str, elements: list[dict], threshold: float = 0.3) -> Optional[dict]:
+    """Find element that best matches response text."""
+    response_clean = clean_response(response)
     
     best_match = None
     best_score = threshold
     
     for elem in elements:
-        text = elem.get("text", "").lower()
+        text = elem.get("text", "").lower().strip()
+        if not text:
+            continue
         
-        # Exact substring match
-        if response_lower in text or text in response_lower:
+        # Exact match
+        if response_clean == text:
             return elem
         
-        # Similarity match
-        score = similarity(response_lower, text)
-        if score > best_score:
-            best_score = score
-            best_match = elem
+        # Substring match (either direction)
+        if response_clean in text or text in response_clean:
+            # Prefer longer matches
+            match_len = min(len(response_clean), len(text))
+            if match_len > best_score * 100:  # Convert to comparable scale
+                best_match = elem
+                best_score = match_len / 100
+            continue
         
-        # Check if response contains key words from element
-        words = [w for w in text.split() if len(w) > 4]
+        # Key words from element found in response
+        words = [w for w in text.split() if len(w) > 3]
         if words:
-            matches = sum(1 for w in words if w in response_lower)
+            matches = sum(1 for w in words if w in response_clean)
             word_score = matches / len(words)
             if word_score > best_score:
                 best_score = word_score
                 best_match = elem
+        
+        # Key words from response found in element
+        resp_words = [w for w in response_clean.split() if len(w) > 3]
+        if resp_words:
+            matches = sum(1 for w in resp_words if w in text)
+            word_score = matches / len(resp_words)
+            if word_score > best_score:
+                best_score = word_score
+                best_match = elem
+        
+        # Similarity as fallback
+        sim = similarity(response_clean, text)
+        if sim > best_score:
+            best_score = sim
+            best_match = elem
     
     return best_match
 
@@ -169,7 +211,7 @@ def verify_aggregate_task(
     Args:
         response: Model's answer
         task_type: "aggregate_click", "filter_click", etc.
-        criteria: What we're looking for ("highest discount", "most comments")
+        criteria: What we're looking for (the question)
         page_data: Page data with elements
         
     Returns:
@@ -178,97 +220,127 @@ def verify_aggregate_task(
     numeric_data = extract_numeric_values(page_data)
     elements = extract_page_elements(page_data)
     
+    if not elements:
+        return False, "No elements found in page data"
+    
     # Find what element model mentioned
     mentioned = find_element_by_response(response, elements)
-    if not mentioned:
-        return False, "Could not find mentioned element in page"
     
     criteria_lower = criteria.lower()
+    response_clean = clean_response(response)
     
-    # Check different criteria types
-    if "highest" in criteria_lower or "most" in criteria_lower or "top" in criteria_lower:
-        # Find the metric
+    # If model says "none found" or similar - check if that's correct
+    if any(neg in response_clean for neg in ["no ", "none", "not found", "cannot find", "doesn't have"]):
+        # This might be correct if there really are no matching items
+        return False, "Model reported no matches found"
+    
+    # Category/section questions - looser matching
+    if "category" in criteria_lower or "section" in criteria_lower:
+        # Just verify the response mentions something that could be a category
+        category_words = ["electronics", "grocery", "home", "clothing", "appliances", 
+                         "furniture", "toys", "sports", "health", "beauty", "office",
+                         "automotive", "garden", "food", "pharmacy", "optical"]
+        for cat in category_words:
+            if cat in response_clean:
+                return True, f"Found category: {cat}"
+        if mentioned:
+            return True, f"Found element: {mentioned['text'][:30]}..."
+        return False, "Could not identify category in response"
+    
+    # "Most" questions (most products, most items, etc.)
+    if "most" in criteria_lower:
+        if "discount" in criteria_lower or "off" in criteria_lower:
+            items = numeric_data["discounts"]
+        elif "comment" in criteria_lower:
+            items = numeric_data["counts"]
+        elif "upvote" in criteria_lower or "point" in criteria_lower:
+            items = numeric_data["scores"]
+        elif "expensive" in criteria_lower or "price" in criteria_lower:
+            items = numeric_data["prices"]
+        else:
+            # Generic "most" - just check element exists
+            if mentioned:
+                return True, f"Found element: {mentioned['text'][:30]}..."
+            return False, "Could not find mentioned element"
+        
+        if items:
+            top_item = max(items, key=lambda x: x["value"])
+            mentioned_in_items = find_element_by_response(response, items)
+            if mentioned_in_items:
+                sorted_items = sorted(items, key=lambda x: -x["value"])
+                top_ids = [item["id"] for item in sorted_items[:3]]
+                if mentioned_in_items["id"] in top_ids:
+                    return True, f"Correctly identified top item (value: {mentioned_in_items['value']})"
+    
+    # Highest/top questions
+    if "highest" in criteria_lower or "top" in criteria_lower or "best" in criteria_lower:
         if "discount" in criteria_lower or "off" in criteria_lower or "save" in criteria_lower:
             items = numeric_data["discounts"]
-            if not items:
-                return False, "No discounts found on page"
-            top_item = max(items, key=lambda x: x["value"])
-            
         elif "comment" in criteria_lower or "discussion" in criteria_lower:
             items = numeric_data["counts"]
-            if not items:
-                return False, "No comment counts found on page"
-            top_item = max(items, key=lambda x: x["value"])
-            
         elif "upvote" in criteria_lower or "point" in criteria_lower or "score" in criteria_lower:
             items = numeric_data["scores"]
-            if not items:
-                return False, "No scores found on page"
-            top_item = max(items, key=lambda x: x["value"])
-            
         elif "price" in criteria_lower or "expensive" in criteria_lower:
             items = numeric_data["prices"]
-            if not items:
-                return False, "No prices found on page"
-            top_item = max(items, key=lambda x: x["value"])
-            
+        elif "rating" in criteria_lower or "review" in criteria_lower:
+            items = numeric_data["scores"]
         else:
-            return False, f"Unknown criteria: {criteria}"
+            items = []
         
-        # Check if mentioned element is the top one (or close to it)
-        mentioned_in_items = find_element_by_response(response, items)
-        if mentioned_in_items:
-            # Allow top 3 as correct (rankings can be subjective)
-            sorted_items = sorted(items, key=lambda x: -x["value"])
-            top_ids = [item["id"] for item in sorted_items[:3]]
-            if mentioned_in_items["id"] in top_ids:
-                return True, f"Correctly identified top item (value: {mentioned_in_items['value']})"
-        
-        return False, f"Not the top item. Top is: {top_item['text'][:50]}..."
+        if items:
+            top_item = max(items, key=lambda x: x["value"])
+            mentioned_in_items = find_element_by_response(response, items)
+            if mentioned_in_items:
+                sorted_items = sorted(items, key=lambda x: -x["value"])
+                top_ids = [item["id"] for item in sorted_items[:3]]
+                if mentioned_in_items["id"] in top_ids:
+                    return True, f"Correctly identified top item (value: {mentioned_in_items['value']})"
+            return False, f"Not the top item. Top is: {top_item['text'][:40]}..."
     
-    elif "lowest" in criteria_lower or "cheapest" in criteria_lower or "least" in criteria_lower:
-        if "price" in criteria_lower or "cheap" in criteria_lower:
-            items = numeric_data["prices"]
-            if not items:
-                return False, "No prices found on page"
+    # Lowest/cheapest questions
+    if "lowest" in criteria_lower or "cheapest" in criteria_lower or "least" in criteria_lower:
+        items = numeric_data["prices"] if numeric_data["prices"] else []
+        if items:
             bottom_item = min(items, key=lambda x: x["value"])
-            
             mentioned_in_items = find_element_by_response(response, items)
             if mentioned_in_items:
                 sorted_items = sorted(items, key=lambda x: x["value"])
                 bottom_ids = [item["id"] for item in sorted_items[:3]]
                 if mentioned_in_items["id"] in bottom_ids:
-                    return True, f"Correctly identified cheapest (value: {mentioned_in_items['value']})"
-        
-        return False, f"Not the lowest. Lowest is: {bottom_item['text'][:50]}..."
+                    return True, f"Correctly identified cheapest (${mentioned_in_items['value']})"
+            return False, f"Not the cheapest. Cheapest is: {bottom_item['text'][:40]}..."
     
-    elif "under" in criteria_lower or "below" in criteria_lower or "less than" in criteria_lower:
-        # Extract threshold value
+    # Under/below threshold questions
+    if "under" in criteria_lower or "below" in criteria_lower or "less than" in criteria_lower:
         threshold_match = re.search(r'\$?(\d+)', criteria_lower)
         if threshold_match:
             threshold = float(threshold_match.group(1))
             items = [p for p in numeric_data["prices"] if p["value"] < threshold]
-            if not items:
-                return False, f"No items under ${threshold}"
-            
-            mentioned_in_items = find_element_by_response(response, items)
-            if mentioned_in_items:
-                return True, f"Correctly found item under ${threshold}"
-        
+            if items:
+                mentioned_in_items = find_element_by_response(response, items)
+                if mentioned_in_items:
+                    return True, f"Found item under ${threshold} (${mentioned_in_items['value']})"
+            elif not items:
+                return False, f"No items under ${threshold} on page"
         return False, "Could not verify price threshold"
     
-    elif "category" in criteria_lower or "section" in criteria_lower:
-        # For category questions, check if response mentions a valid category
-        # This is looser - just verify the element exists
-        if mentioned:
-            return True, f"Found element: {mentioned['text'][:50]}..."
-        return False, "Could not find mentioned category"
+    # Price questions
+    if "price" in criteria_lower or "$" in response_clean:
+        # Extract price from response
+        price_match = re.search(r'\$?([\d,]+\.?\d*)', response_clean)
+        if price_match:
+            resp_price = float(price_match.group(1).replace(",", ""))
+            # Check if this price exists on page
+            for p in numeric_data["prices"]:
+                if abs(p["value"] - resp_price) < 0.01:
+                    return True, f"Price ${resp_price} found on page"
+            return False, f"Price ${resp_price} not found on page"
     
-    # Default: check if mentioned element exists
+    # Default: just check if mentioned element exists
     if mentioned:
-        return True, f"Element found: {mentioned['text'][:50]}..."
+        return True, f"Element found: {mentioned['text'][:40]}..."
     
-    return False, "Could not verify answer"
+    return False, "Could not find mentioned element in page"
 
 
 def score_compound_task(
