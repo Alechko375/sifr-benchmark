@@ -40,21 +40,83 @@ FOOTNOTE_TEMPLATES = {
 
 
 # ============================================================
-# PROMPTS - Each format gets native instructions
+# PROMPTS - Understanding + Action
 # ============================================================
 
-EXECUTION_PROMPTS = {
-    "sifr": """You are a web automation agent. The page is described in SiFR format.
+# Understanding prompts - require reasoning, not just finding
+UNDERSTAND_PROMPTS = {
+    "sifr": """You are analyzing a webpage. The page is described in structured format.
 
 {context}
 
-TASK: {task}
+QUESTION: {question}
 
 Instructions:
-- Find the element that matches the task
-- Return ONLY the element ID (like a002, btn001, input001)
-- Element IDs are in ====NODES==== section
-- Element text is in ====DETAILS==== section under same ID
+- Analyze the page structure to answer the question
+- This requires reasoning, not just finding an element
+- Be specific - give exact text/name/value
+
+Respond with just the answer, nothing else.
+
+ANSWER:""",
+
+    "html_raw": """You are analyzing a webpage. The page HTML is below.
+
+{context}
+
+QUESTION: {question}
+
+Instructions:
+- Analyze the HTML structure to answer the question
+- This requires reasoning, not just finding an element
+- Be specific - give exact text/name/value
+
+Respond with just the answer, nothing else.
+
+ANSWER:""",
+
+    "axtree": """You are analyzing a webpage. The accessibility tree is below.
+
+{context}
+
+QUESTION: {question}
+
+Instructions:
+- Analyze the accessibility tree to answer the question
+- This requires reasoning, not just finding an element
+- Be specific - give exact text/name/value
+
+Respond with just the answer, nothing else.
+
+ANSWER:""",
+
+    "screenshot": """You are analyzing a webpage screenshot.
+
+QUESTION: {question}
+
+Instructions:
+- Analyze what you see to answer the question
+- This requires reasoning, not just finding an element
+- Be specific - give exact text/name/value
+
+Respond with just the answer, nothing else.
+
+ANSWER:""",
+}
+
+# Action prompts - find and click based on understanding
+ACTION_PROMPTS = {
+    "sifr": """You are a web automation agent. The page is described in structured format.
+
+{context}
+
+You determined: {understand_answer}
+
+TASK: {action_question}
+
+Instructions:
+- Find the element based on your understanding
+- Return ONLY the element ID (like a002, btn001)
 
 Respond with just the element ID, nothing else.
 
@@ -64,28 +126,29 @@ ANSWER:""",
 
 {context}
 
-TASK: {task}
+You determined: {understand_answer}
+
+TASK: {action_question}
 
 Instructions:
-- Find the element that matches the task
-- Return a CSS selector that uniquely identifies it
-- Prefer: #id, [data-testid], .specific-class
-- If no good selector, return the exact visible text
+- Find the element based on your understanding
+- Return a CSS selector or exact visible text
 
 Respond with just the selector or text, nothing else.
 
 ANSWER:""",
 
-    "axtree": """You are a web automation agent. The page accessibility tree is below.
+    "axtree": """You are a web automation agent. The accessibility tree is below.
 
 {context}
 
-TASK: {task}
+You determined: {understand_answer}
+
+TASK: {action_question}
 
 Instructions:
-- Find the element that matches the task
-- Return the exact text/name of the element as shown in the tree
-- This will be used for text-based element lookup
+- Find the element based on your understanding
+- Return the exact text/name of the element
 
 Respond with just the element text, nothing else.
 
@@ -93,14 +156,56 @@ ANSWER:""",
 
     "screenshot": """You are a web automation agent looking at a screenshot.
 
-TASK: {task}
+You determined: {understand_answer}
+
+TASK: {action_question}
 
 Instructions:
-- Find the element that matches the task
+- Find the element based on your understanding
 - Return the exact visible text of the element
-- This will be used for text-based element lookup
 
 Respond with just the element text, nothing else.
+
+ANSWER:""",
+}
+
+# Legacy simple prompts
+EXECUTION_PROMPTS = {
+    "sifr": """You are a web automation agent. The page is described in structured format.
+
+{context}
+
+TASK: {task}
+
+Return ONLY the element ID (like a002, btn001). Nothing else.
+
+ANSWER:""",
+
+    "html_raw": """You are a web automation agent. The page HTML is below.
+
+{context}
+
+TASK: {task}
+
+Return a CSS selector or exact visible text. Nothing else.
+
+ANSWER:""",
+
+    "axtree": """You are a web automation agent. The accessibility tree is below.
+
+{context}
+
+TASK: {task}
+
+Return the exact text/name of the element. Nothing else.
+
+ANSWER:""",
+
+    "screenshot": """You are a web automation agent looking at a screenshot.
+
+TASK: {task}
+
+Return the exact visible text of the element. Nothing else.
 
 ANSWER:""",
 }
@@ -121,21 +226,27 @@ def render_ground_truth_summary(gt_path: Path, verbose: bool = False):
         return
     with open(gt_path) as f:
         gt = json.load(f)
-    tasks = gt.get("tasks", [])
-    if not tasks:
-        return
-    type_counts = {}
-    for task in tasks:
-        task_type = task.get("type", "unknown").replace("action_", "")
-        type_counts[task_type] = type_counts.get(task_type, 0) + 1
-    type_str = ", ".join(f"{count} {t}" for t, count in sorted(type_counts.items()))
-    console.print(f"  [dim]Tasks: {len(tasks)} ({type_str})[/dim]")
-    if verbose:
-        for task in tasks:
-            q = task.get("question", "")[:50]
-            a = task.get("answer", "")
-            text = task.get("element_text", "")
-            console.print(f"    • {q}... → [cyan]{a}[/cyan] ({text})")
+    
+    # Compound tasks
+    compound_tasks = gt.get("compound_tasks", [])
+    simple_tasks = gt.get("simple_tasks", gt.get("tasks", []))
+    
+    if compound_tasks:
+        type_counts = {}
+        for task in compound_tasks:
+            task_type = task.get("type", "unknown")
+            type_counts[task_type] = type_counts.get(task_type, 0) + 1
+        type_str = ", ".join(f"{count} {t}" for t, count in sorted(type_counts.items()))
+        console.print(f"  [dim]Compound tasks: {len(compound_tasks)} ({type_str})[/dim]")
+        
+        if verbose:
+            for task in compound_tasks:
+                q = task.get("understand", {}).get("question", "")[:40]
+                a = task.get("understand", {}).get("answer", "")[:30]
+                console.print(f"    • {q}... → [cyan]{a}[/cyan]")
+    
+    if simple_tasks:
+        console.print(f"  [dim]Simple tasks: {len(simple_tasks)}[/dim]")
 
 
 def render_errors(results: list[dict], format_name: str, model: str = None, verbose: bool = False):
@@ -162,11 +273,6 @@ def render_errors(results: list[dict], format_name: str, model: str = None, verb
         expected = r.get("expected", "?")
         got = r.get("response", "none") or "none"
         console.print(f"    [red]✗[/red] {task_id}: expected [cyan]{expected}[/cyan], got [yellow]{got}[/yellow]")
-    if verbose and successes:
-        for r in successes:
-            task_id = r.get("task_id", "?")
-            expected = r.get("expected", "?")
-            console.print(f"    [green]✓[/green] {task_id}: [cyan]{expected}[/cyan]")
 
 
 def aggregate_by_page(results: list[dict], runner: BenchmarkRunner) -> dict[str, list[FormatResult]]:
@@ -265,6 +371,39 @@ def render_multi_model_results(site_name: str, results_by_model: dict[str, list[
     console.print(table)
 
 
+def render_compound_results(results: list[dict], site_name: str):
+    """Render compound task results - understand + act."""
+    table = Table(title=f"Understanding + Action Results: {site_name}")
+    table.add_column("Format", style="cyan")
+    table.add_column("Understand", justify="right", style="yellow")
+    table.add_column("Act", justify="right", style="blue")
+    table.add_column("Combined", justify="right", style="green")
+    table.add_column("Tokens", justify="right")
+    
+    by_format = defaultdict(list)
+    for r in results:
+        by_format[r.get("format", "unknown")].append(r)
+    
+    for fmt in ["sifr", "html_raw", "axtree", "screenshot"]:
+        if fmt not in by_format:
+            continue
+        fmt_results = by_format[fmt]
+        
+        understand_correct = sum(1 for r in fmt_results if r.get("understand_correct"))
+        act_correct = sum(1 for r in fmt_results if r.get("act_success"))
+        combined_correct = sum(1 for r in fmt_results if r.get("understand_correct") and r.get("act_success"))
+        total = len(fmt_results)
+        
+        understand_rate = f"{understand_correct/total*100:.0f}%" if total else "—"
+        act_rate = f"{act_correct/total*100:.0f}%" if total else "—"
+        combined_rate = f"{combined_correct/total*100:.0f}%" if total else "—"
+        avg_tokens = sum(r.get("tokens", 0) for r in fmt_results) // max(total, 1)
+        
+        table.add_row(fmt, understand_rate, act_rate, combined_rate, f"{avg_tokens:,}")
+    
+    console.print(table)
+
+
 def render_execution_results(results: list[dict], site_name: str):
     """Render execution-based benchmark results."""
     table = Table(title=f"Execution Results: {site_name}")
@@ -289,14 +428,7 @@ def render_execution_results(results: list[dict], site_name: str):
         avg_tokens = sum(r.get("tokens", 0) for r in fmt_results) // max(len(fmt_results), 1)
         avg_latency = sum(r.get("latency_ms", 0) for r in fmt_results) // max(len(fmt_results), 1)
         
-        table.add_row(
-            fmt,
-            str(success),
-            str(failed),
-            rate,
-            f"{avg_tokens:,}",
-            f"{avg_latency:,}ms"
-        )
+        table.add_row(fmt, str(success), str(failed), rate, f"{avg_tokens:,}", f"{avg_latency:,}ms")
     
     console.print(table)
 
@@ -375,7 +507,8 @@ def run(models, formats, run_dir, runs, target_size):
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
 @click.option("--target-size", "-s", default=DEFAULT_TARGET_SIZE_KB, type=int, help="Budget in KB for ALL formats")
 @click.option("--execution", is_flag=True, help="Use execution-based verification (Playwright)")
-def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, target_size, execution):
+@click.option("--compound", is_flag=True, help="Use compound tasks (understand → act)")
+def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, target_size, execution, compound):
     """Full benchmark: capture → ground truth → test (isolated run)."""
     import asyncio
     try:
@@ -395,7 +528,9 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
     console.print(f"Models: [yellow]{', '.join(model_list)}[/yellow]")
     console.print(f"Formats: {', '.join(ALL_FORMATS)}")
     console.print(f"Budget (all formats): [yellow]{target_size}KB[/yellow]")
-    if execution:
+    if compound:
+        console.print(f"Mode: [green]Compound tasks (understand → act)[/green]")
+    elif execution:
         console.print(f"Mode: [green]Execution-based (Playwright verification)[/green]")
     
     # Step 1: Capture
@@ -418,6 +553,8 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
     # Step 2: Ground truth
     console.print("\n[bold]Step 2/3: Generating ground truth...[/bold]")
     from .ground_truth import generate_ground_truth
+    gt_mode = "compound" if compound else "simple"
+    
     for page_id in captured_pages:
         screenshot_path = captures_dir / "screenshots" / f"{page_id}.png"
         sifr_path = captures_dir / "sifr" / f"{page_id}.sifr"
@@ -429,7 +566,7 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
             console.print(f"  ⚠️ {page_id}: sifr not found")
             continue
         try:
-            result = generate_ground_truth(screenshot_path, sifr_path, gt_output)
+            result = generate_ground_truth(screenshot_path, sifr_path, gt_output, mode=gt_mode)
             if "error" in result:
                 console.print(f"  ⚠️ {page_id}: {result['error']}")
             else:
@@ -439,7 +576,26 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
             console.print(f"  ⚠️ {page_id}: {e}")
     
     # Step 3: Benchmark
-    if execution:
+    if compound:
+        # Compound tasks: understand → act
+        console.print("\n[bold]Step 3/3: Running compound benchmark (understand → act)...[/bold]")
+        bench_results = asyncio.run(run_compound_benchmark(
+            run_dir=run_dir,
+            urls=list(urls),
+            captured_pages=captured_pages,
+            model_list=model_list,
+            extension=extension,
+            target_size_bytes=target_size_bytes,
+            verbose=verbose
+        ))
+        
+        # Render compound results
+        for page_id in captured_pages:
+            page_results = [r for r in bench_results if r.get("page_id") == page_id]
+            if page_results:
+                site_name = page_id.replace("_", ".")
+                render_compound_results(page_results, site_name)
+    elif execution:
         # Execution-based benchmark with Playwright verification
         console.print("\n[bold]Step 3/3: Running execution-based benchmark...[/bold]")
         bench_results = asyncio.run(run_execution_benchmark(
@@ -507,6 +663,7 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
         "pages": captured_pages,
         "target_size_kb": target_size,
         "execution_mode": execution,
+        "compound_mode": compound,
         "version": __version__,
     }
     with open(run_dir / "run_meta.json", "w") as f:
@@ -514,6 +671,247 @@ def full_benchmark_e2llm(urls, extension, models, runs, base_dir, verbose, targe
     
     console.print(f"\n[green]✅ Benchmark complete![/green]")
     console.print(f"[cyan]Results: {run_dir}[/cyan]")
+
+
+async def run_compound_benchmark(
+    run_dir: Path,
+    urls: list,
+    captured_pages: list,
+    model_list: list,
+    extension: str,
+    target_size_bytes: int,
+    verbose: bool = False
+) -> list[dict]:
+    """Run compound benchmark: understand → act."""
+    from playwright.async_api import async_playwright
+    from .verification import SiFRResolver, verify_response
+    from .models import query_model
+    from .formats import load_format
+    
+    results = []
+    
+    async with async_playwright() as p:
+        context = await p.chromium.launch_persistent_context(
+            user_data_dir="./e2llm-chrome-profile",
+            headless=False,
+            args=[
+                f"--disable-extensions-except={extension}",
+                f"--load-extension={extension}",
+            ]
+        )
+        page = await context.new_page()
+        
+        for page_id, url in zip(captured_pages, urls):
+            gt_path = run_dir / "ground-truth" / f"{page_id}.json"
+            if not gt_path.exists():
+                continue
+            
+            gt = json.loads(gt_path.read_text())
+            compound_tasks = gt.get("compound_tasks", [])
+            
+            if not compound_tasks:
+                console.print(f"  ⚠️ {page_id}: no compound tasks")
+                continue
+            
+            console.print(f"\n  [bold]{page_id}[/bold]")
+            
+            # Load page
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                console.print(f"    ❌ Failed to load: {e}")
+                continue
+            
+            # Load resolver
+            sifr_path = run_dir / "captures" / "sifr" / f"{page_id}.sifr"
+            sifr_resolver = None
+            if sifr_path.exists():
+                sifr_resolver = SiFRResolver(sifr_path.read_text(encoding='utf-8'))
+            
+            screenshot_path = run_dir / "captures" / "screenshots" / f"{page_id}.png"
+            
+            for model in model_list:
+                for fmt in ALL_FORMATS:
+                    # Load format
+                    try:
+                        if fmt == "screenshot":
+                            if not screenshot_path.exists():
+                                continue
+                            context_str = None
+                        else:
+                            context_str, meta = load_format(
+                                page_id, fmt, run_dir,
+                                return_meta=True, max_chars=target_size_bytes
+                            )
+                    except FileNotFoundError:
+                        continue
+                    
+                    for task in compound_tasks:
+                        task_id = task.get("id", "?")
+                        task_type = task.get("type", "unknown")
+                        
+                        understand = task.get("understand", {})
+                        act = task.get("act", {})
+                        
+                        understand_question = understand.get("question", "")
+                        expected_answer = understand.get("answer", "")
+                        action_question = act.get("question", "")
+                        target_text = act.get("target_text", expected_answer)
+                        
+                        total_tokens = 0
+                        total_latency = 0
+                        
+                        # Step 1: UNDERSTAND
+                        understand_prompt = UNDERSTAND_PROMPTS.get(fmt, UNDERSTAND_PROMPTS["html_raw"])
+                        
+                        start = time.time()
+                        try:
+                            if fmt == "screenshot":
+                                full_prompt = understand_prompt.format(question=understand_question)
+                                image_bytes = screenshot_path.read_bytes()
+                                resp = query_model(model, full_prompt, image=image_bytes)
+                            else:
+                                full_prompt = understand_prompt.format(
+                                    context=context_str, 
+                                    question=understand_question
+                                )
+                                resp = query_model(model, full_prompt)
+                            
+                            understand_latency = int((time.time() - start) * 1000)
+                            total_latency += understand_latency
+                            
+                            if resp.get("error"):
+                                results.append({
+                                    "page_id": page_id,
+                                    "model": model,
+                                    "format": fmt,
+                                    "task_id": task_id,
+                                    "task_type": task_type,
+                                    "understand_correct": False,
+                                    "act_success": False,
+                                    "error": resp["error"],
+                                    "tokens": resp.get("tokens", 0),
+                                    "latency_ms": understand_latency,
+                                })
+                                continue
+                            
+                            understand_response = resp.get("response", "").strip()
+                            total_tokens += resp.get("tokens", 0)
+                            
+                        except Exception as e:
+                            results.append({
+                                "page_id": page_id,
+                                "model": model,
+                                "format": fmt,
+                                "task_id": task_id,
+                                "task_type": task_type,
+                                "understand_correct": False,
+                                "act_success": False,
+                                "error": str(e),
+                                "tokens": 0,
+                                "latency_ms": 0,
+                            })
+                            continue
+                        
+                        # Check understand correctness
+                        understand_correct = expected_answer.lower() in understand_response.lower()
+                        
+                        # Step 2: ACT (only if understand was attempted)
+                        action_prompt = ACTION_PROMPTS.get(fmt, ACTION_PROMPTS["html_raw"])
+                        
+                        start = time.time()
+                        try:
+                            if fmt == "screenshot":
+                                full_prompt = action_prompt.format(
+                                    understand_answer=understand_response,
+                                    action_question=action_question
+                                )
+                                image_bytes = screenshot_path.read_bytes()
+                                resp = query_model(model, full_prompt, image=image_bytes)
+                            else:
+                                full_prompt = action_prompt.format(
+                                    context=context_str,
+                                    understand_answer=understand_response,
+                                    action_question=action_question
+                                )
+                                resp = query_model(model, full_prompt)
+                            
+                            act_latency = int((time.time() - start) * 1000)
+                            total_latency += act_latency
+                            
+                            if resp.get("error"):
+                                results.append({
+                                    "page_id": page_id,
+                                    "model": model,
+                                    "format": fmt,
+                                    "task_id": task_id,
+                                    "task_type": task_type,
+                                    "understand_question": understand_question,
+                                    "understand_response": understand_response,
+                                    "understand_expected": expected_answer,
+                                    "understand_correct": understand_correct,
+                                    "act_success": False,
+                                    "error": resp["error"],
+                                    "tokens": total_tokens + resp.get("tokens", 0),
+                                    "latency_ms": total_latency,
+                                })
+                                continue
+                            
+                            act_response = resp.get("response", "").strip().strip('"').strip("'")
+                            total_tokens += resp.get("tokens", 0)
+                            
+                        except Exception as e:
+                            results.append({
+                                "page_id": page_id,
+                                "model": model,
+                                "format": fmt,
+                                "task_id": task_id,
+                                "task_type": task_type,
+                                "understand_correct": understand_correct,
+                                "act_success": False,
+                                "error": str(e),
+                                "tokens": total_tokens,
+                                "latency_ms": total_latency,
+                            })
+                            continue
+                        
+                        # Verify action using Playwright
+                        act_success, resolved_selector, error = await verify_response(
+                            page, act_response, fmt, sifr_resolver
+                        )
+                        
+                        result = {
+                            "page_id": page_id,
+                            "model": model,
+                            "format": fmt,
+                            "task_id": task_id,
+                            "task_type": task_type,
+                            "understand_question": understand_question,
+                            "understand_response": understand_response,
+                            "understand_expected": expected_answer,
+                            "understand_correct": understand_correct,
+                            "act_question": action_question,
+                            "act_response": act_response,
+                            "act_target": target_text,
+                            "act_success": act_success,
+                            "resolved_selector": resolved_selector,
+                            "combined_success": understand_correct and act_success,
+                            "error": error,
+                            "tokens": total_tokens,
+                            "latency_ms": total_latency,
+                        }
+                        results.append(result)
+                        
+                        # Verbose output
+                        if verbose:
+                            u_icon = "✅" if understand_correct else "❌"
+                            a_icon = "✅" if act_success else "❌"
+                            console.print(f"    [{fmt}] {task_id}: U{u_icon} A{a_icon} | {understand_response[:25]}...")
+        
+        await context.close()
+    
+    return results
 
 
 async def run_execution_benchmark(
@@ -550,7 +948,7 @@ async def run_execution_benchmark(
                 continue
             
             gt = json.loads(gt_path.read_text())
-            tasks = gt.get("tasks", [])
+            tasks = gt.get("simple_tasks", gt.get("tasks", []))
             
             if not tasks:
                 continue
@@ -565,13 +963,12 @@ async def run_execution_benchmark(
                 console.print(f"    ❌ Failed to load: {e}")
                 continue
             
-            # Load SiFR resolver
+            # Load resolver
             sifr_path = run_dir / "captures" / "sifr" / f"{page_id}.sifr"
             sifr_resolver = None
             if sifr_path.exists():
                 sifr_resolver = SiFRResolver(sifr_path.read_text(encoding='utf-8'))
             
-            # Screenshot path for vision
             screenshot_path = run_dir / "captures" / "screenshots" / f"{page_id}.png"
             
             for model in model_list:
@@ -581,7 +978,7 @@ async def run_execution_benchmark(
                         if fmt == "screenshot":
                             if not screenshot_path.exists():
                                 continue
-                            context_str = None  # Screenshot uses image, not text
+                            context_str = None
                         else:
                             context_str, meta = load_format(
                                 page_id, fmt, run_dir,
@@ -594,16 +991,12 @@ async def run_execution_benchmark(
                         task_id = task.get("id", "?")
                         question = task.get("question", "")
                         task_type = task.get("type", "action_click")
-                        target_selector = task.get("target", {}).get("selector")
                         
-                        # Get prompt for this format
                         prompt = EXECUTION_PROMPTS.get(fmt, EXECUTION_PROMPTS["html_raw"])
                         
-                        # Query model
                         start = time.time()
                         try:
                             if fmt == "screenshot":
-                                # Vision API call with image
                                 full_prompt = prompt.format(task=question)
                                 image_bytes = screenshot_path.read_bytes()
                                 resp = query_model(model, full_prompt, image=image_bytes)
@@ -641,10 +1034,8 @@ async def run_execution_benchmark(
                             })
                             continue
                         
-                        # Clean response
                         response_clean = response.strip().strip('"').strip("'")
                         
-                        # Verify response using Playwright
                         success, resolved_selector, error = await verify_response(
                             page, response_clean, fmt, sifr_resolver
                         )
@@ -761,7 +1152,12 @@ def list_runs():
                 meta = json.load(f)
         status = "✅ Complete" if results_path.exists() else "⏳ Partial"
         models_str = ",".join(meta.get("models", ["?"]))
-        mode = "Exec" if meta.get("execution_mode") else "Score"
+        if meta.get("compound_mode"):
+            mode = "Compound"
+        elif meta.get("execution_mode"):
+            mode = "Exec"
+        else:
+            mode = "Score"
         table.add_row(
             run_dir.name,
             meta.get("timestamp", "")[:16].replace("T", " "),
@@ -781,7 +1177,10 @@ def info():
 [bold]Quick Start:[/bold]
   sifr-bench full-benchmark-e2llm https://example.com -e /path/to/extension
 
-[bold]Execution-based benchmark (recommended):[/bold]
+[bold]Compound benchmark (understand → act):[/bold]
+  sifr-bench full-benchmark-e2llm https://example.com -e /path/to/ext --compound
+
+[bold]Execution-based benchmark:[/bold]
   sifr-bench full-benchmark-e2llm https://example.com -e /path/to/ext --execution
 
 [bold]Multi-model comparison:[/bold]
@@ -800,16 +1199,17 @@ def info():
   -m, --models          Models to test (comma-separated, default: gpt-4o-mini)
   -r, --runs            Number of runs per test (default: 1)
   -s, --target-size     Budget in KB for ALL formats (default: {DEFAULT_TARGET_SIZE_KB})
-  --execution           Use Playwright verification (objective)
+  --compound            Use compound tasks (understand → act)
+  --execution           Use Playwright verification (simple tasks)
 
 [bold]Benchmark modes:[/bold]
   Score-based (default)  — Compare model response to expected text
   Execution-based        — Verify action via Playwright (--execution)
+  Compound               — Understand first, then act (--compound)
 
 [bold]Output format:[/bold]
-  ✅ — Success (accuracy >= 50% / action succeeded)
-  ⚠️  — Warning (accuracy < 50%)
-  ❌ — Failed (accuracy = 0% / action failed)
+  ✅ — Success
+  ❌ — Failed
 """)
 
 
