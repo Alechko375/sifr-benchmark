@@ -569,7 +569,7 @@ async def run_execution_benchmark(
             sifr_path = run_dir / "captures" / "sifr" / f"{page_id}.sifr"
             sifr_resolver = None
             if sifr_path.exists():
-                sifr_resolver = SiFRResolver(sifr_path.read_text())
+                sifr_resolver = SiFRResolver(sifr_path.read_text(encoding='utf-8'))
             
             for model in model_list:
                 for fmt in ALL_FORMATS:
