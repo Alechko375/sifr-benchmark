@@ -2,7 +2,7 @@
 CLI interface for SiFR Benchmark.
 Each benchmark run creates an isolated directory with all data.
 """
- 
+
 import click
 from pathlib import Path
 from rich.console import Console
@@ -10,6 +10,7 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 import json
 import os
+import time
 from datetime import datetime
 from collections import defaultdict
 
@@ -595,11 +596,26 @@ async def run_execution_benchmark(
                         full_prompt = prompt.format(context=context_str, task=question)
                         
                         # Query model
-                        import time
                         start = time.time()
                         try:
-                            response, tokens = query_model(model, full_prompt)
+                            resp = query_model(model, full_prompt)
                             latency_ms = int((time.time() - start) * 1000)
+                            
+                            if resp.get("error"):
+                                results.append({
+                                    "page_id": page_id,
+                                    "model": model,
+                                    "format": fmt,
+                                    "task_id": task_id,
+                                    "success": False,
+                                    "error": resp["error"],
+                                    "tokens": resp.get("tokens", 0),
+                                    "latency_ms": latency_ms,
+                                })
+                                continue
+                            
+                            response = resp.get("response", "")
+                            tokens = resp.get("tokens", 0)
                         except Exception as e:
                             results.append({
                                 "page_id": page_id,
