@@ -35,13 +35,18 @@ TOKEN_COSTS = {
 
 # Format-specific prompts
 PROMPTS = {
-    "sifr": """Page in SiFR format:
+    "sifr": """Page structure as JSON. Each element has:
+- "id": unique identifier for clicking (e.g., "a001", "btn002", "inp003")
+- "tag": element type (a, button, input, div, etc.)
+- "text": visible text content
+- "bbox": position [x, y, width, height]
+- "children": nested elements
 
 {context}
 
 TASK: {question}
 
-Return ONLY the element ID (like a002, btn001). Nothing else.
+Return ONLY the "id" value of the target element (e.g., a001, btn002).
 
 ANSWER:""",
 
@@ -201,7 +206,6 @@ class BenchmarkRunner:
             cost = (tokens / 1_000_000) * TOKEN_COSTS.get(model, 1.0)
             
             if resp.get("error"):
-                # Check if it's a vision error
                 failure_reason = None
                 if "vision" in resp.get("error", "").lower():
                     failure_reason = FailureReason.NO_VISION
@@ -335,7 +339,6 @@ class BenchmarkRunner:
             d = agg.get(fmt, {"scores": [], "tokens": [], "latencies": [], "costs": [], "successes": [], "errors": []})
             n = len(d["scores"])
             
-            # Determine status
             if n == 0 and d["errors"]:
                 status = "failed"
                 failure_reason = FailureReason.NOT_CAPTURED
