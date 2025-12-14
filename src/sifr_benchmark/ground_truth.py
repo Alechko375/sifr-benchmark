@@ -5,6 +5,7 @@ Ground truth generation for SiFR Benchmark.
 import base64
 import json
 from pathlib import Path
+from typing import Optional, Union
 
 
 COMPOUND_PROMPT = """Analyze this webpage screenshot. Generate COMPOUND tasks that require UNDERSTANDING first, then ACTION.
@@ -205,6 +206,10 @@ def encode_image(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
+def encode_image_bytes(data: bytes) -> str:
+    return base64.b64encode(data).decode("utf-8")
+
+
 def find_in_page_data(page_data: dict, text: str) -> dict:
     if not text:
         return {}
@@ -255,13 +260,9 @@ def extract_elements_by_type(page_data: dict, elem_types: list) -> list:
     return elements
 
 
-def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
-    if not page_data_path.exists():
-        return ground_truth
-    
-    try:
-        page_data = json.loads(page_data_path.read_text(encoding="utf-8"))
-    except:
+def enrich_ground_truth(ground_truth: dict, page_data: dict) -> dict:
+    """Enrich ground truth with element IDs from page data (in-memory version)."""
+    if not page_data:
         return ground_truth
     
     metadata = page_data.get("metadata", page_data.get("====METADATA====", {}))
@@ -269,6 +270,7 @@ def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
     if url:
         ground_truth.setdefault("_meta", {})["url"] = url
     
+    # Enrich compound tasks
     for task in ground_truth.get("compound_tasks", []):
         target_text = task.get("act", {}).get("target_text", "")
         match = find_in_page_data(page_data, target_text)
@@ -288,6 +290,7 @@ def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
             "bbox": answer_match.get("bbox"),
         }
     
+    # Enrich dev tasks
     for task in ground_truth.get("dev_tasks", []):
         answer = task.get("answer", "")
         if isinstance(answer, str):
@@ -299,6 +302,7 @@ def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
                 "bbox": match.get("bbox"),
             }
     
+    # Enrich design tasks
     for task in ground_truth.get("design_tasks", []):
         answer = task.get("answer", "")
         if isinstance(answer, str):
@@ -310,6 +314,7 @@ def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
                     "bbox": match.get("bbox"),
                 }
     
+    # Enrich simple tasks
     for task in ground_truth.get("simple_tasks", []):
         answer = task.get("answer", "")
         match = find_in_page_data(page_data, answer)
@@ -320,6 +325,7 @@ def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
             "bbox": match.get("bbox"),
         }
     
+    # Add inventory
     buttons = extract_elements_by_type(page_data, ["button", "btn"])
     links = extract_elements_by_type(page_data, ["a", "link"])
     inputs = extract_elements_by_type(page_data, ["input", "textarea"])
@@ -336,12 +342,57 @@ def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
     return ground_truth
 
 
-def generate_ground_truth(
-    screenshot_path: Path,
-    page_data_path: Path = None,
-    output_path: Path = None,
-    mode: str = "combined"
+def enrich_with_page_data(ground_truth: dict, page_data_path: Path) -> dict:
+    """Enrich ground truth with element IDs from page data (file-based version)."""
+    if not page_data_path.exists():
+        return ground_truth
+    
+    try:
+        page_data = json.loads(page_data_path.read_text(encoding="utf-8"))
+    except:
+        return ground_truth
+    
+    return enrich_ground_truth(ground_truth, page_data)
+
+
+def parse_json_response(content: str) -> dict:
+    """Extract JSON from LLM response."""
+    if "```json" in content:
+        content = content.split("```json")[1].split("```")[0]
+    elif "```" in content:
+        content = content.split("```")[1].split("```")[0]
+    
+    start = content.find("{")
+    if start >= 0:
+        depth = 0
+        for i, c in enumerate(content[start:], start):
+            depth += (c == "{") - (c == "}")
+            if depth == 0:
+                content = content[start:i+1]
+                break
+    
+    return json.loads(content)
+
+
+def generate_ground_truth_from_data(
+    screenshot_bytes: bytes,
+    sifr_data: Optional[dict] = None,
+    output_path: Optional[Path] = None,
+    mode: str = "compound"
 ) -> dict:
+    """
+    Generate ground truth from in-memory data.
+    Used by single-session benchmark to avoid file I/O.
+    
+    Args:
+        screenshot_bytes: PNG screenshot as bytes
+        sifr_data: Parsed SiFR data (dict), optional
+        output_path: Where to save result (optional)
+        mode: Task generation mode
+    
+    Returns:
+        Ground truth dict
+    """
     import os
     from openai import OpenAI
     
@@ -357,7 +408,7 @@ def generate_ground_truth(
         "design": DESIGN_PROMPT,
         "combined": COMBINED_PROMPT,
     }
-    prompt = prompts.get(mode, COMBINED_PROMPT)
+    prompt = prompts.get(mode, COMPOUND_PROMPT)
     
     try:
         response = client.chat.completions.create(
@@ -367,7 +418,7 @@ def generate_ground_truth(
                 "content": [
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {
-                        "url": f"data:image/png;base64,{encode_image(screenshot_path)}",
+                        "url": f"data:image/png;base64,{encode_image_bytes(screenshot_bytes)}",
                         "detail": "high"
                     }}
                 ]
@@ -377,40 +428,67 @@ def generate_ground_truth(
         )
         
         content = response.choices[0].message.content
+        ground_truth = parse_json_response(content)
         
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0]
-        
-        start = content.find("{")
-        if start >= 0:
-            depth = 0
-            for i, c in enumerate(content[start:], start):
-                depth += (c == "{") - (c == "}")
-                if depth == 0:
-                    content = content[start:i+1]
-                    break
-        
-        ground_truth = json.loads(content)
         ground_truth["_meta"] = {
-            "screenshot": str(screenshot_path),
             "model": "gpt-4o",
             "tokens": response.usage.total_tokens,
             "mode": mode,
         }
         
-        if page_data_path:
-            ground_truth = enrich_with_page_data(ground_truth, page_data_path)
+        # Enrich with SiFR data if available
+        if sifr_data:
+            ground_truth = enrich_ground_truth(ground_truth, sifr_data)
         
+        # Save if path provided
         if output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(json.dumps(ground_truth, indent=2, ensure_ascii=False))
         
         return ground_truth
         
+    except json.JSONDecodeError as e:
+        return {"error": f"Failed to parse JSON: {e}"}
     except Exception as e:
         return {"error": str(e)}
+
+
+def generate_ground_truth(
+    screenshot_path: Path,
+    page_data_path: Path = None,
+    output_path: Path = None,
+    mode: str = "combined"
+) -> dict:
+    """Generate ground truth from file paths (original interface)."""
+    import os
+    from openai import OpenAI
+    
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"error": "OPENAI_API_KEY not set"}
+    
+    # Read screenshot and delegate to in-memory version
+    screenshot_bytes = screenshot_path.read_bytes()
+    
+    sifr_data = None
+    if page_data_path and page_data_path.exists():
+        try:
+            sifr_data = json.loads(page_data_path.read_text(encoding="utf-8"))
+        except:
+            pass
+    
+    result = generate_ground_truth_from_data(
+        screenshot_bytes=screenshot_bytes,
+        sifr_data=sifr_data,
+        output_path=output_path,
+        mode=mode
+    )
+    
+    # Add screenshot path to meta
+    if "_meta" in result:
+        result["_meta"]["screenshot"] = str(screenshot_path)
+    
+    return result
 
 
 def generate_ground_truth_for_page(
